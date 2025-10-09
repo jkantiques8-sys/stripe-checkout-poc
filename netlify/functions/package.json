@@ -1,0 +1,6 @@
+{
+  "name": "stripe-checkout-poc",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "stripe": "^13.0.0" }
+}
