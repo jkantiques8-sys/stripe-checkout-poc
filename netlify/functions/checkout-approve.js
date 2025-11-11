@@ -33,10 +33,11 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Accept token from either GET ?token=... or POST { token }
-    let token =
-      (event.queryStringParameters && event.queryStringParameters.token) ||
-      (event.body && (() => { try { return JSON.parse(event.body).token; } catch { return null; } })());
+    // accept token via GET ?token=... or POST { token }
+    const qsToken = event.queryStringParameters && event.queryStringParameters.token;
+    let bodyToken = null;
+    if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
+    const token = qsToken || bodyToken;
 
     if (!token) {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Token is required' }) };
@@ -46,22 +47,34 @@ exports.handler = async (event) => {
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
-      console.error('JWT verification failed:', err.message);
       return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
     const { paymentIntentId, customerName, customerEmail, customerPhone, orderDetails } = decoded;
 
-    // Capture the payment
-    const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
-    console.log(`Payment approved for ${customerName}. PI: ${paymentIntentId}`);
+    // ✅ STATUS GUARD: Only capture if capturable
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (pi.status !== 'requires_capture' || (pi.amount_capturable ?? 0) <= 0) {
+      return {
+        statusCode: 409,
+        headers: { 'Content-Type': 'application/json', ...cors },
+        body: JSON.stringify({
+          success: false,
+          error: 'Not capturable',
+          details: `PaymentIntent is ${pi.status}. Only requires_capture can be approved.`,
+        }),
+      };
+    }
 
-    // (optional) notify via Twilio/Resend — unchanged from your version
+    // Capture
+    const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
+
+    // Optional notifications
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
         await twilio.messages.create({
-          body: `Great news ${customerName}! Your rush order has been approved and your payment has been processed. We'll have everything ready for ${orderDetails?.eventDate || 'your event'}.`,
+          body: `Great news ${customerName}! Your rush order has been approved. ${orderDetails?.eventDate ? 'Event: ' + orderDetails.eventDate : ''}`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
@@ -73,8 +86,8 @@ exports.handler = async (event) => {
         await resend.emails.send({
           from: 'Kraus Tables & Chairs <orders@kraustablesandchairs.com>',
           to: customerEmail,
-          subject: 'Rush Order Approved! 🎉',
-          html: `<h2>Your Rush Order Has Been Approved!</h2><p>Hi ${customerName}, your payment has been processed.</p>`
+          subject: 'Rush Order Approved',
+          html: `<p>Hi ${customerName}, your payment was captured successfully.</p>`
         });
       } catch (e) { console.error('Email error:', e.message); }
     }
@@ -90,7 +103,7 @@ exports.handler = async (event) => {
       })
     };
   } catch (error) {
-    console.error('Error capturing payment:', error);
+    console.error('Approve error:', error);
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Failed to capture payment', details: error.message }) };
   }
 };
