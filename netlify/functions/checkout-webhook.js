@@ -2,21 +2,38 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const jwt = require('jsonwebtoken');
 
-// Twilio setup (for SMS)
-const twilio = require('twilio')(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
-// Resend setup (for Email)
-const { Resend } = require('resend');
-const resend = new Resend(process.env.RESEND_API_KEY);
-
+// Configuration
 const OWNER_PHONE = process.env.OWNER_PHONE || '+17182184057';
 const OWNER_EMAIL = process.env.OWNER_EMAIL || 'orders@kraustables.com';
 const SITE_URL = process.env.SITE_URL || 'https://kraustables.com';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 const TWILIO_FROM = process.env.TWILIO_FROM_PHONE;
+
+// Check if notification services are configured
+const TWILIO_CONFIGURED = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && TWILIO_FROM);
+const RESEND_CONFIGURED = !!process.env.RESEND_API_KEY;
+
+// Lazy-load Twilio only if configured
+let twilioClient = null;
+function getTwilio() {
+  if (!TWILIO_CONFIGURED) return null;
+  if (!twilioClient) {
+    const twilio = require('twilio');
+    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  }
+  return twilioClient;
+}
+
+// Lazy-load Resend only if configured
+let resendClient = null;
+function getResend() {
+  if (!RESEND_CONFIGURED) return null;
+  if (!resendClient) {
+    const { Resend } = require('resend');
+    resendClient = new Resend(process.env.RESEND_API_KEY);
+  }
+  return resendClient;
+}
 
 // Generate signed token for approve/decline links (24 hour expiry)
 function generateToken(pi, action) {
@@ -38,7 +55,8 @@ function formatWindow(type, value) {
 
 // Send owner SMS notification
 async function sendOwnerSMS(orderData) {
-  if (!TWILIO_FROM) {
+  const twilio = getTwilio();
+  if (!twilio) {
     console.log('Twilio not configured, skipping SMS');
     return;
   }
@@ -73,12 +91,17 @@ Total: ${totalFormatted}
     console.log('Owner SMS sent successfully');
   } catch (error) {
     console.error('Error sending owner SMS:', error);
-    // Don't throw - continue with email even if SMS fails
   }
 }
 
 // Send owner email notification
 async function sendOwnerEmail(orderData) {
+  const resend = getResend();
+  if (!resend) {
+    console.log('Resend not configured, skipping email');
+    return;
+  }
+
   const { pi, sessionId, customerName, customerPhone, customerEmail, isRush, 
           dropoffDate, dropoffWindow, pickupDate, pickupWindow, orderSummary, 
           totalFormatted, street, city, state, zip, approveUrl, declineUrl } = orderData;
@@ -189,13 +212,13 @@ async function sendOwnerEmail(orderData) {
     console.log('Owner email sent successfully');
   } catch (error) {
     console.error('Error sending owner email:', error);
-    // Don't throw - we want the webhook to succeed even if email fails
   }
 }
 
 // Send customer confirmation SMS
 async function sendCustomerSMS(phone, name, dropoffDate) {
-  if (!TWILIO_FROM) {
+  const twilio = getTwilio();
+  if (!twilio) {
     console.log('Twilio not configured, skipping customer SMS');
     return;
   }
@@ -224,6 +247,12 @@ Questions? Call or text (718) 218-4057`;
 
 // Send customer confirmation email
 async function sendCustomerEmail(email, name, dropoffDate) {
+  const resend = getResend();
+  if (!resend) {
+    console.log('Resend not configured, skipping customer email');
+    return;
+  }
+
   const html = `
 <!DOCTYPE html>
 <html>
@@ -376,7 +405,13 @@ exports.handler = async (event) => {
       declineUrl
     };
 
-    // Send notifications (don't await - fire and forget)
+    // Log notification status
+    console.log('Notification services configured:', {
+      twilio: TWILIO_CONFIGURED,
+      resend: RESEND_CONFIGURED
+    });
+
+    // Send notifications (don't await - fire and forget to prevent timeout)
     Promise.all([
       sendOwnerSMS(orderData),
       sendOwnerEmail(orderData),
@@ -388,7 +423,12 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ received: true, notifications_sent: true })
+      body: JSON.stringify({ 
+        received: true, 
+        notifications_attempted: true,
+        twilio_configured: TWILIO_CONFIGURED,
+        resend_configured: RESEND_CONFIGURED
+      })
     };
   }
 
