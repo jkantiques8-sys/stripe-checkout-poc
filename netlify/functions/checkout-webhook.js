@@ -136,7 +136,7 @@ exports.handler = async (event, context) => {
           : '';
         
         await resend.emails.send({
-          from: 'Kraus Tables & Chairs <orders@kraustablesandchairs.com>',
+          from: 'Kraus Tables & Chairs <${process.env.FROM_EMAIL || 'orders@kraustables.com'}>',
           to: process.env.OWNER_EMAIL,
           subject: `🔔 New Order Needs Approval - ${customerName}`,
           html: `
@@ -198,7 +198,7 @@ exports.handler = async (event, context) => {
     if (resend && customerEmail) {
       try {
         await resend.emails.send({
-          from: 'Kraus Tables & Chairs <orders@kraustablesandchairs.com>',
+          from: 'Kraus Tables & Chairs <${process.env.FROM_EMAIL || 'orders@kraustables.com'}>',
           to: customerEmail,
           subject: 'Order Received - Pending Confirmation',
           html: `
