@@ -23,7 +23,7 @@ function getResendClient() {
 
 exports.handler = async (event, context) => {
   const sig = event.headers['stripe-signature'];
-  
+
   let stripeEvent;
 
   try {
@@ -43,7 +43,7 @@ exports.handler = async (event, context) => {
   // Handle the checkout.session.completed event
   if (stripeEvent.type === 'checkout.session.completed') {
     const session = stripeEvent.data.object;
-    
+
     console.log(`Processing ${stripeEvent.type}: ${session.id}`);
 
     // ALL orders require manual approval - no conditional logic needed
@@ -53,7 +53,7 @@ exports.handler = async (event, context) => {
     const customerName = session.customer_details?.name || 'Customer';
     const customerEmail = session.customer_details?.email;
     const customerPhone = session.customer_details?.phone;
-    
+
     // Extract order details from metadata
     const orderDetails = {
       eventDate: session.metadata?.eventDate,
@@ -104,16 +104,28 @@ exports.handler = async (event, context) => {
     console.log('='.repeat(80));
 
     // Check notification services configuration
-    const twilioConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER);
+    const twilioConfigured = !!(
+      process.env.TWILIO_ACCOUNT_SID &&
+      process.env.TWILIO_AUTH_TOKEN &&
+      process.env.TWILIO_PHONE_NUMBER
+    );
     const resendConfigured = !!process.env.RESEND_API_KEY;
-    
-    console.log(`Notification services configured: { twilio: ${twilioConfigured}, resend: ${resendConfigured} }`);
 
-    // Send SMS to owner if Twilio is configured
+    console.log(
+      `Notification services configured: { twilio: ${twilioConfigured}, resend: ${resendConfigured} }`
+    );
+
+    // Resolve "from" email (for Resend)
+    const fromEmail =
+      process.env.FROM_EMAIL ||
+      'Kraus Tables & Chairs <orders@kraustables.com>';
+
+    // --- Owner SMS via Twilio ---
     const twilio = getTwilioClient();
     if (twilio && process.env.OWNER_PHONE && process.env.TWILIO_PHONE_NUMBER) {
       try {
-        const rushIndicator = orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0 ? '⚡ RUSH ' : '';
+        const rushIndicator =
+          orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0 ? '⚡ RUSH ' : '';
         await twilio.messages.create({
           body: `🔔 ${rushIndicator}ORDER from ${customerName}\nEvent: ${orderDetails.eventDate}\nAmount: $${orderDetails.orderTotal}\n\nApprove: ${approveUrl}\nDecline: ${declineUrl}`,
           from: process.env.TWILIO_PHONE_NUMBER,
@@ -127,16 +139,17 @@ exports.handler = async (event, context) => {
       console.log('Twilio not configured, skipping owner SMS');
     }
 
-    // Send email to owner if Resend is configured
+    // --- Owner email via Resend ---
     const resend = getResendClient();
     if (resend && process.env.OWNER_EMAIL) {
       try {
-        const rushBadge = orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0 
-          ? '<span style="background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;">⚡ RUSH</span>' 
-          : '';
-        
+        const rushBadge =
+          orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0
+            ? '<span style="background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;">⚡ RUSH</span>'
+            : '';
+
         await resend.emails.send({
-          from: 'Kraus Tables & Chairs <${process.env.FROM_EMAIL || 'orders@kraustables.com'}>',
+          from: fromEmail,
           to: process.env.OWNER_EMAIL,
           subject: `🔔 New Order Needs Approval - ${customerName}`,
           html: `
@@ -178,7 +191,7 @@ exports.handler = async (event, context) => {
       console.log('Resend not configured, skipping owner email');
     }
 
-    // Send notification to customer that order is pending
+    // --- Customer SMS (order received / pending) ---
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
         await twilio.messages.create({
@@ -194,11 +207,11 @@ exports.handler = async (event, context) => {
       console.log('Twilio not configured, skipping customer SMS');
     }
 
-    // Send email to customer that order is pending
+    // --- Customer email (order received / pending) ---
     if (resend && customerEmail) {
       try {
         await resend.emails.send({
-          from: 'Kraus Tables & Chairs <${process.env.FROM_EMAIL || 'orders@kraustables.com'}>',
+          from: fromEmail,
           to: customerEmail,
           subject: 'Order Received - Pending Confirmation',
           html: `
