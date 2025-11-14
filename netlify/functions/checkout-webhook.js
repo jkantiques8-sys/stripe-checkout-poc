@@ -6,9 +6,16 @@ let twilioClient = null;
 let resendClient = null;
 
 function getTwilioClient() {
-  if (!twilioClient && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+  if (
+    !twilioClient &&
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN
+  ) {
     const twilio = require('twilio');
-    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    twilioClient = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    );
   }
   return twilioClient;
 }
@@ -54,16 +61,44 @@ exports.handler = async (event, context) => {
     const customerEmail = session.customer_details?.email;
     const customerPhone = session.customer_details?.phone;
 
-    // Extract order details from metadata
+    // ------------------------------------------------------------------
+    // ORDER METADATA MAPPING
+    // ------------------------------------------------------------------
+    // ⬇️ If your actual Stripe metadata keys differ, update them here.
     const orderDetails = {
-      eventDate: session.metadata?.eventDate,
-      serviceType: session.metadata?.serviceType,
-      orderTotal: session.metadata?.orderTotal || (session.amount_total / 100),
+      dropOffDate: session.metadata?.dropOffDate,
+      pickupDate: session.metadata?.pickupDate,
+      dropOffWindow: session.metadata?.dropOffWindow,
+      pickupWindow: session.metadata?.pickupWindow,
+      // Optional descriptive field if you end up using it later:
+      serviceType: session.metadata?.serviceType || 'Full-service delivery & pickup',
+      orderTotal:
+        session.metadata?.orderTotal || session.amount_total / 100,
       deliveryAddress: session.metadata?.deliveryAddress,
       subtotal: session.metadata?.subtotal,
       deliveryFee: session.metadata?.deliveryFee,
-      rushFee: session.metadata?.rushFee,
+      pickupFee: session.metadata?.pickupFee,
+      rushFee: session.metadata?.rushFee
     };
+
+    const scheduleSummary = [
+      orderDetails.dropOffDate
+        ? `Drop-off: ${orderDetails.dropOffDate}${
+            orderDetails.dropOffWindow
+              ? ` (${orderDetails.dropOffWindow})`
+              : ''
+          }`
+        : null,
+      orderDetails.pickupDate
+        ? `Pickup: ${orderDetails.pickupDate}${
+            orderDetails.pickupWindow
+              ? ` (${orderDetails.pickupWindow})`
+              : ''
+          }`
+        : null
+    ]
+      .filter(Boolean)
+      .join(' | ');
 
     // Create JWT token with order information (expires in 24 hours)
     const tokenPayload = {
@@ -75,10 +110,13 @@ exports.handler = async (event, context) => {
       sessionId: session.id
     };
 
-    const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '24h' });
+    const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
+      expiresIn: '24h'
+    });
 
     // Generate approve and decline URLs
-    const siteUrl = process.env.SITE_URL || 'https://enchanting-monstera-41f4df.netlify.app';
+    const siteUrl =
+      process.env.SITE_URL || 'https://enchanting-monstera-41f4df.netlify.app';
     const approveUrl = `${siteUrl}/.netlify/functions/checkout-approve?token=${token}`;
     const declineUrl = `${siteUrl}/.netlify/functions/checkout-decline?token=${token}`;
 
@@ -89,9 +127,26 @@ exports.handler = async (event, context) => {
     console.log(`Customer: ${customerName}`);
     console.log(`Email: ${customerEmail || 'Not provided'}`);
     console.log(`Phone: ${customerPhone || 'Not provided'}`);
-    console.log(`Event Date: ${orderDetails.eventDate || 'Not provided'}`);
-    console.log(`Service Type: ${orderDetails.serviceType || 'Not provided'}`);
+    console.log(
+      `Drop-off: ${
+        orderDetails.dropOffDate || 'Not provided'
+      } ${orderDetails.dropOffWindow ? `(${orderDetails.dropOffWindow})` : ''}`
+    );
+    console.log(
+      `Pickup: ${
+        orderDetails.pickupDate || 'Not provided'
+      } ${orderDetails.pickupWindow ? `(${orderDetails.pickupWindow})` : ''}`
+    );
+    console.log(
+      `Delivery Address: ${orderDetails.deliveryAddress || 'Not provided'}`
+    );
     console.log(`Order Total: $${orderDetails.orderTotal}`);
+    if (orderDetails.deliveryFee) {
+      console.log(`Delivery Fee: $${orderDetails.deliveryFee}`);
+    }
+    if (orderDetails.pickupFee) {
+      console.log(`Pickup Fee: $${orderDetails.pickupFee}`);
+    }
     if (orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0) {
       console.log(`⚡ Rush Fee Applied: $${orderDetails.rushFee}`);
     }
@@ -120,14 +175,23 @@ exports.handler = async (event, context) => {
       process.env.FROM_EMAIL ||
       'Kraus Tables & Chairs <orders@kraustables.com>';
 
-    // --- Owner SMS via Twilio ---
+    // ------------------------------------------------------------------
+    // OWNER SMS via Twilio
+    // ------------------------------------------------------------------
     const twilio = getTwilioClient();
     if (twilio && process.env.OWNER_PHONE && process.env.TWILIO_PHONE_NUMBER) {
       try {
         const rushIndicator =
-          orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0 ? '⚡ RUSH ' : '';
+          orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0
+            ? '⚡ RUSH '
+            : '';
         await twilio.messages.create({
-          body: `🔔 ${rushIndicator}ORDER from ${customerName}\nEvent: ${orderDetails.eventDate}\nAmount: $${orderDetails.orderTotal}\n\nApprove: ${approveUrl}\nDecline: ${declineUrl}`,
+          body:
+            `🔔 ${rushIndicator}ORDER from ${customerName}\n` +
+            (scheduleSummary ? `${scheduleSummary}\n` : '') +
+            `Amount: $${orderDetails.orderTotal}\n\n` +
+            `Approve: ${approveUrl}\n` +
+            `Decline: ${declineUrl}`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: process.env.OWNER_PHONE
         });
@@ -139,7 +203,9 @@ exports.handler = async (event, context) => {
       console.log('Twilio not configured, skipping owner SMS');
     }
 
-    // --- Owner email via Resend ---
+    // ------------------------------------------------------------------
+    // OWNER EMAIL via Resend
+    // ------------------------------------------------------------------
     const resend = getResendClient();
     if (resend && process.env.OWNER_EMAIL) {
       try {
@@ -147,6 +213,30 @@ exports.handler = async (event, context) => {
           orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0
             ? '<span style="background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;">⚡ RUSH</span>'
             : '';
+
+        const scheduleHtml = `
+          <p><strong>Schedule:</strong></p>
+          <ul>
+            ${
+              orderDetails.dropOffDate
+                ? `<li>Drop-off: ${orderDetails.dropOffDate}${
+                    orderDetails.dropOffWindow
+                      ? ` (${orderDetails.dropOffWindow})`
+                      : ''
+                  }</li>`
+                : ''
+            }
+            ${
+              orderDetails.pickupDate
+                ? `<li>Pickup: ${orderDetails.pickupDate}${
+                    orderDetails.pickupWindow
+                      ? ` (${orderDetails.pickupWindow})`
+                      : ''
+                  }</li>`
+                : ''
+            }
+          </ul>
+        `;
 
         await resend.emails.send({
           from: fromEmail,
@@ -157,15 +247,36 @@ exports.handler = async (event, context) => {
             <p><strong>Customer:</strong> ${customerName}</p>
             <p><strong>Email:</strong> ${customerEmail || 'Not provided'}</p>
             <p><strong>Phone:</strong> ${customerPhone || 'Not provided'}</p>
-            <p><strong>Event Date:</strong> ${orderDetails.eventDate || 'Not provided'}</p>
-            <p><strong>Service Type:</strong> ${orderDetails.serviceType || 'Not provided'}</p>
-            ${orderDetails.deliveryAddress ? `<p><strong>Delivery Address:</strong> ${orderDetails.deliveryAddress}</p>` : ''}
+            ${
+              orderDetails.deliveryAddress
+                ? `<p><strong>Delivery Address:</strong> ${orderDetails.deliveryAddress}</p>`
+                : ''
+            }
+            ${scheduleHtml}
             <hr>
             <p><strong>Order Summary:</strong></p>
             <ul>
-              ${orderDetails.subtotal ? `<li>Subtotal: $${orderDetails.subtotal}</li>` : ''}
-              ${orderDetails.deliveryFee ? `<li>Delivery Fee: $${orderDetails.deliveryFee}</li>` : ''}
-              ${orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0 ? `<li>⚡ Rush Fee: $${orderDetails.rushFee}</li>` : ''}
+              ${
+                orderDetails.subtotal
+                  ? `<li>Subtotal: $${orderDetails.subtotal}</li>`
+                  : ''
+              }
+              ${
+                orderDetails.deliveryFee
+                  ? `<li>Delivery Fee: $${orderDetails.deliveryFee}</li>`
+                  : ''
+              }
+              ${
+                orderDetails.pickupFee
+                  ? `<li>Pickup Fee: $${orderDetails.pickupFee}</li>`
+                  : ''
+              }
+              ${
+                orderDetails.rushFee &&
+                parseFloat(orderDetails.rushFee) > 0
+                  ? `<li>⚡ Rush Fee: $${orderDetails.rushFee}</li>`
+                  : ''
+              }
               <li><strong>Total: $${orderDetails.orderTotal}</strong></li>
             </ul>
             <hr>
@@ -191,11 +302,20 @@ exports.handler = async (event, context) => {
       console.log('Resend not configured, skipping owner email');
     }
 
-    // --- Customer SMS (order received / pending) ---
+    // ------------------------------------------------------------------
+    // CUSTOMER SMS (order received / pending)
+    // ------------------------------------------------------------------
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
+        const baseLine = `Hi ${customerName}, thank you for your order!`;
+        const scheduleLine = scheduleSummary
+          ? `\nSchedule: ${scheduleSummary}`
+          : '';
+        const footerLine =
+          '\nWe\'re reviewing the details and will confirm within a few hours. - Kraus Tables & Chairs';
+
         await twilio.messages.create({
-          body: `Hi ${customerName}, thank you for your order! We're reviewing the details for ${orderDetails.eventDate} and will confirm within a few hours. - Kraus Tables & Chairs`,
+          body: baseLine + scheduleLine + footerLine,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
@@ -207,9 +327,38 @@ exports.handler = async (event, context) => {
       console.log('Twilio not configured, skipping customer SMS');
     }
 
-    // --- Customer email (order received / pending) ---
+    // ------------------------------------------------------------------
+    // CUSTOMER EMAIL (order received / pending)
+    // ------------------------------------------------------------------
     if (resend && customerEmail) {
       try {
+        const scheduleHtmlCustomer =
+          orderDetails.dropOffDate || orderDetails.pickupDate
+            ? `
+              <h3>Schedule:</h3>
+              <ul>
+                ${
+                  orderDetails.dropOffDate
+                    ? `<li><strong>Drop-off:</strong> ${orderDetails.dropOffDate}${
+                        orderDetails.dropOffWindow
+                          ? ` (${orderDetails.dropOffWindow})`
+                          : ''
+                      }</li>`
+                    : ''
+                }
+                ${
+                  orderDetails.pickupDate
+                    ? `<li><strong>Pickup:</strong> ${orderDetails.pickupDate}${
+                        orderDetails.pickupWindow
+                          ? ` (${orderDetails.pickupWindow})`
+                          : ''
+                      }</li>`
+                    : ''
+                }
+              </ul>
+            `
+            : '';
+
         await resend.emails.send({
           from: fromEmail,
           to: customerEmail,
@@ -217,15 +366,17 @@ exports.handler = async (event, context) => {
           html: `
             <h2>Thank You For Your Order!</h2>
             <p>Hi ${customerName},</p>
-            <p>We've received your order for <strong>${orderDetails.eventDate}</strong>.</p>
-            <p>We're reviewing the details to ensure everything is perfect for your event.</p>
+            <p>We've received your order and we're reviewing the details to ensure everything is perfect for your event.</p>
             <p><strong>We'll confirm your order within a few hours.</strong></p>
             <p>Your payment of <strong>$${orderDetails.orderTotal}</strong> is authorized but not yet charged. We'll only charge your card once we confirm we can fulfill your order.</p>
+            ${scheduleHtmlCustomer}
             <h3>Order Summary:</h3>
             <ul>
-              <li><strong>Event Date:</strong> ${orderDetails.eventDate}</li>
-              <li><strong>Service Type:</strong> ${orderDetails.serviceType}</li>
-              ${orderDetails.deliveryAddress ? `<li><strong>Delivery Address:</strong> ${orderDetails.deliveryAddress}</li>` : ''}
+              ${
+                orderDetails.deliveryAddress
+                  ? `<li><strong>Delivery Address:</strong> ${orderDetails.deliveryAddress}</li>`
+                  : ''
+              }
               <li><strong>Total:</strong> $${orderDetails.orderTotal}</li>
             </ul>
             <p>If you have any questions, feel free to reach out!</p>
