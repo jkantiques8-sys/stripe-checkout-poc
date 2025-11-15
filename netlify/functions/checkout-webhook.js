@@ -55,21 +55,48 @@ const formatMoney = (amount) => {
   })}`;
 };
 
+// Add weekday name (Monday, Tuesday, etc.)
 const formatDate = (isoDate) => {
   if (!isoDate) return 'Not provided';
-  // isoDate is expected "YYYY-MM-DD"
   const d = new Date(isoDate + 'T00:00:00');
   if (Number.isNaN(d.getTime())) return isoDate;
   return d.toLocaleDateString('en-US', {
+    weekday: 'long',   // <-- HERE: Monday, Tuesday, etc.
     year: 'numeric',
     month: 'short',
     day: 'numeric'
   });
 };
 
+// Convert "23-24" -> "11PM–12AM", "12-4" -> "12PM–4PM" etc.
+const formatHourRange = (value) => {
+  if (!value) return null;
+  const match = /^(\d{1,2})-(\d{1,2})$/.exec(value.trim());
+  if (!match) return value;
+
+  const [, startStr, endStr] = match;
+  const start = Number(startStr);
+  const end = Number(endStr);
+  if (Number.isNaN(start) || Number.isNaN(end)) return value;
+
+  const fmt = (h) => {
+    const normalized = ((h % 24) + 24) % 24;
+    const suffix = normalized >= 12 ? 'PM' : 'AM';
+    const hour12 = normalized % 12 === 0 ? 12 : normalized % 12;
+    return `${hour12}${suffix}`;
+  };
+
+  return `${fmt(start)}–${fmt(end)}`;
+};
+
 const formatWindow = (value, type) => {
   if (!value) return 'Not provided';
-  if (type === 'prompt') return value; // your free-text “prompt” entries
+
+  // Try to pretty-print ranges like "12-4", "23-24"
+  const pretty = formatHourRange(value);
+  if (pretty) return pretty;
+
+  // Fallback – just show whatever text was entered
   return value;
 };
 
@@ -88,12 +115,18 @@ const summarizeSchedule = (details) => {
       )})`
     : 'Not provided';
 
-  const extra =
+  const extraDays =
     details.extraDays && Number(details.extraDays) > 0
-      ? `${details.extraDays} extra day(s)`
-      : 'None';
+      ? Number(details.extraDays)
+      : 0;
 
-  return { dropoff, pickup, extra };
+  return {
+    dropoff,
+    pickup,
+    extraDays,
+    extraLabel:
+      extraDays > 0 ? `${extraDays} extra day${extraDays > 1 ? 's' : ''}` : ''
+  };
 };
 
 const decodeItems = (rawItems) => {
@@ -184,8 +217,11 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
       <strong>Drop-off:</strong> ${schedule.dropoff}<br />
-      <strong>Pickup:</strong> ${schedule.pickup}<br />
-      <strong>Extra Days:</strong> ${schedule.extra}
+      <strong>Pickup:</strong> ${schedule.pickup}${
+        schedule.extraLabel
+          ? `<br /><strong>Extra Days:</strong> ${schedule.extraLabel}`
+          : ''
+      }
     </p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Delivery Address</h3>
@@ -285,8 +321,11 @@ const buildCustomerEmailHtml = (details) => {
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
       <strong>Drop-off:</strong> ${schedule.dropoff}<br />
-      <strong>Pickup:</strong> ${schedule.pickup}<br />
-      <strong>Extra Days:</strong> ${schedule.extra}
+      <strong>Pickup:</strong> ${schedule.pickup}${
+        schedule.extraLabel
+          ? `<br /><strong>Extra Days:</strong> ${schedule.extraLabel}`
+          : ''
+      }
     </p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Order Summary</h3>
@@ -313,13 +352,13 @@ const buildCustomerEmailHtml = (details) => {
 const buildOwnerSms = (details, approveUrl, declineUrl) => {
   const schedule = summarizeSchedule(details);
 
-  // SMS must stay under Twilio's 1600 char limit; this is intentionally short.
   return (
     `New order ${formatMoney(details.totalNumber)} – ${
       details.customerName || 'New customer'
     }\n` +
     `Drop-off: ${schedule.dropoff}\n` +
     `Pickup: ${schedule.pickup}\n` +
+    (schedule.extraLabel ? `Extra: ${schedule.extraLabel}\n` : '') +
     `Approve: ${approveUrl}\nDecline: ${declineUrl}`
   );
 };
