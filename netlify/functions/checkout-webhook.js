@@ -61,7 +61,7 @@ const formatDate = (isoDate) => {
   const d = new Date(isoDate + 'T00:00:00');
   if (Number.isNaN(d.getTime())) return isoDate;
   return d.toLocaleDateString('en-US', {
-    weekday: 'long',   // <-- HERE: Monday, Tuesday, etc.
+    weekday: 'long',
     year: 'numeric',
     month: 'short',
     day: 'numeric'
@@ -92,11 +92,9 @@ const formatHourRange = (value) => {
 const formatWindow = (value, type) => {
   if (!value) return 'Not provided';
 
-  // Try to pretty-print ranges like "12-4", "23-24"
   const pretty = formatHourRange(value);
   if (pretty) return pretty;
 
-  // Fallback – just show whatever text was entered
   return value;
 };
 
@@ -148,44 +146,99 @@ const decodeItems = (rawItems) => {
   }
 };
 
+const formatPhoneNumber = (value) => {
+  if (!value) return null;
+  const digits = String(value).replace(/\D/g, '');
+  let d = digits;
+  if (d.length === 11 && d.startsWith('1')) {
+    d = d.slice(1);
+  }
+  if (d.length === 10) {
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  }
+  return value;
+};
+
+const buildItemsHtml = (items) => {
+  if (!items || !items.length) return '';
+
+  return `
+    <h3 style="margin:24px 0 8px;font-size:15px;">Items</h3>
+    <table width="100%" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:14px;">
+      <thead>
+        <tr>
+          <th align="left">Item</th>
+          <th align="right">Qty</th>
+          <th align="right">Unit</th>
+          <th align="right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items
+          .map(
+            (item) => `
+          <tr>
+            <td>${item.name}</td>
+            <td align="right">${item.qty}</td>
+            <td align="right">${formatMoney(item.unit)}</td>
+            <td align="right">${formatMoney(item.total)}</td>
+          </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>`;
+};
+
+const buildOrderSummaryRows = (details) => {
+  const rows = [];
+
+  // Subtotal always shown
+  rows.push(`
+    <tr>
+      <td style="padding:2px 8px 2px 0;">Subtotal:</td>
+      <td style="padding:2px 0;" align="right">${formatMoney(
+        details.subtotalNumber
+      )}</td>
+    </tr>
+  `);
+
+  const addRowIfPositive = (label, value) => {
+    if (!value || value <= 0) return;
+    rows.push(`
+      <tr>
+        <td style="padding:2px 8px 2px 0;">${label}:</td>
+        <td style="padding:2px 0;" align="right">${formatMoney(value)}</td>
+      </tr>
+    `);
+  };
+
+  addRowIfPositive('Delivery Fee', details.deliveryFeeNumber);
+  addRowIfPositive('Rush Fee', details.rushFeeNumber);
+  addRowIfPositive('Drop-off Window Fee', details.dropoffWindowFeeNumber);
+  addRowIfPositive('Pickup Window Fee', details.pickupWindowFeeNumber);
+  addRowIfPositive('Extended Rental Fee', details.extendedFeeNumber);
+  addRowIfPositive('Minimum Surcharge', details.minOrderFeeNumber);
+  addRowIfPositive('Tax', details.taxNumber);
+
+  rows.push(`
+    <tr>
+      <td style="padding:8px 8px 2px 0;font-weight:bold;border-top:1px solid #ddd;">Total:</td>
+      <td style="padding:8px 0 2px;font-weight:bold;border-top:1px solid #ddd;" align="right">${formatMoney(
+        details.totalNumber
+      )}</td>
+    </tr>
+  `);
+
+  return rows.join('');
+};
+
 // ==== Email builders ========================================================
 
 const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   const schedule = summarizeSchedule(details);
   const items = details.items || [];
 
-  const hasRush = details.rushFeeNumber && details.rushFeeNumber > 0;
-  const hasDelivery = details.deliveryFeeNumber && details.deliveryFeeNumber > 0;
-  const hasTax = details.taxNumber && details.taxNumber > 0;
-
-  const itemsHtml =
-    items.length > 0
-      ? `
-        <h3 style="margin:24px 0 8px;font-size:15px;">Items</h3>
-        <table width="100%" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:14px;">
-          <thead>
-            <tr>
-              <th align="left">Item</th>
-              <th align="right">Qty</th>
-              <th align="right">Unit</th>
-              <th align="right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${items
-              .map(
-                (item) => `
-              <tr>
-                <td>${item.name}</td>
-                <td align="right">${item.qty}</td>
-                <td align="right">${formatMoney(item.unit)}</td>
-                <td align="right">${formatMoney(item.total)}</td>
-              </tr>`
-              )
-              .join('')}
-          </tbody>
-        </table>`
-      : '';
+  const itemsHtml = buildItemsHtml(items);
 
   const addressLines = [
     details.street,
@@ -201,6 +254,11 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
       ? addressLines.join('<br />')
       : 'Not provided';
 
+  const formattedPhone = formatPhoneNumber(details.customerPhone);
+  const phoneHtml = details.customerPhone
+    ? `<a href="tel:${details.customerPhone}">${formattedPhone}</a>`
+    : 'Not provided';
+
   return `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
     <p>Hi Jonah,</p>
@@ -211,7 +269,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     <p style="margin:0;">
       <strong>Name:</strong> ${details.customerName || 'Not provided'}<br />
       <strong>Email:</strong> ${details.customerEmail || 'Not provided'}<br />
-      <strong>Phone:</strong> ${details.customerPhone || 'Not provided'}
+      <strong>Phone:</strong> ${phoneHtml}
     </p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
@@ -237,48 +295,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     <h3 style="margin:24px 0 8px;font-size:15px;">Order Summary</h3>
     <table cellspacing="0" cellpadding="0" style="font-size:14px;">
       <tbody>
-        <tr>
-          <td style="padding:2px 8px 2px 0;">Subtotal:</td>
-          <td style="padding:2px 0;" align="right">${formatMoney(
-            details.subtotalNumber
-          )}</td>
-        </tr>
-        ${
-          hasDelivery
-            ? `<tr>
-          <td style="padding:2px 8px 2px 0;">Delivery Fee:</td>
-          <td style="padding:2px 0;" align="right">${formatMoney(
-            details.deliveryFeeNumber
-          )}</td>
-        </tr>`
-            : ''
-        }
-        ${
-          hasRush
-            ? `<tr>
-          <td style="padding:2px 8px 2px 0;">Rush Fee:</td>
-          <td style="padding:2px 0;" align="right">${formatMoney(
-            details.rushFeeNumber
-          )}</td>
-        </tr>`
-            : ''
-        }
-        ${
-          hasTax
-            ? `<tr>
-          <td style="padding:2px 8px 2px 0;">Tax:</td>
-          <td style="padding:2px 0;" align="right">${formatMoney(
-            details.taxNumber
-          )}</td>
-        </tr>`
-            : ''
-        }
-        <tr>
-          <td style="padding:8px 8px 2px 0;font-weight:bold;border-top:1px solid #ddd;">Total:</td>
-          <td style="padding:8px 0 2px;font-weight:bold;border-top:1px solid #ddd;" align="right">${formatMoney(
-            details.totalNumber
-          )}</td>
-        </tr>
+        ${buildOrderSummaryRows(details)}
       </tbody>
     </table>
 
@@ -306,6 +323,24 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
 
 const buildCustomerEmailHtml = (details) => {
   const schedule = summarizeSchedule(details);
+  const items = details.items || [];
+  const itemsHtml = buildItemsHtml(items);
+
+  const addressLines = [
+    details.street,
+    details.address2,
+    details.city && details.state
+      ? `${details.city}, ${details.state} ${details.zip || ''}`.trim()
+      : null,
+    !details.city && !details.state && details.zip ? details.zip : null
+  ].filter(Boolean);
+
+  const addressHtml =
+    addressLines.length > 0
+      ? addressLines.join('<br />')
+      : 'Not provided';
+
+  const formattedPhone = formatPhoneNumber(details.customerPhone);
 
   return `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
@@ -328,10 +363,31 @@ const buildCustomerEmailHtml = (details) => {
       }
     </p>
 
-    <h3 style="margin:16px 0 4px;font-size:15px;">Order Summary</h3>
+    <h3 style="margin:16px 0 4px;font-size:15px;">Contact Info</h3>
     <p style="margin:0;">
-      <strong>Total:</strong> ${formatMoney(details.totalNumber)}
+      <strong>Name:</strong> ${details.customerName || 'Not provided'}<br />
+      <strong>Email:</strong> ${details.customerEmail || 'Not provided'}<br />
+      <strong>Phone:</strong> ${
+        formattedPhone || 'Not provided'
+      }
     </p>
+
+    <h3 style="margin:16px 0 4px;font-size:15px;">Delivery Address</h3>
+    <p style="margin:0;">
+      ${addressHtml}<br />
+      <strong>Location Notes:</strong> ${
+        details.locationNotes || 'None provided'
+      }
+    </p>
+
+    ${itemsHtml}
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Order Summary</h3>
+    <table cellspacing="0" cellpadding="0" style="font-size:14px;">
+      <tbody>
+        ${buildOrderSummaryRows(details)}
+      </tbody>
+    </table>
 
     <p style="margin-top:16px;">
       We'll confirm your order within a few hours. We'll only charge your card
@@ -385,7 +441,6 @@ exports.handler = async (event, context) => {
   }
 
   if (stripeEvent.type !== 'checkout.session.completed') {
-    // Not the event we care about; return 200 so Stripe stops retrying
     return { statusCode: 200, body: JSON.stringify({ received: true }) };
   }
 
@@ -405,6 +460,16 @@ exports.handler = async (event, context) => {
   const deliveryFeeNumber = centsToNumber(metadata.delivery_cents);
   const rushFeeNumber = centsToNumber(metadata.rush_cents);
   const taxNumber = centsToNumber(metadata.tax_cents);
+
+  const dropoffWindowFeeNumber = centsToNumber(
+    metadata.dropoff_window_cents
+  );
+  const pickupWindowFeeNumber = centsToNumber(
+    metadata.pickup_window_cents
+  );
+  const extendedFeeNumber = centsToNumber(metadata.extended_cents);
+  const minOrderFeeNumber = centsToNumber(metadata.min_order_cents);
+
   const totalNumber =
     centsToNumber(metadata.total_cents) ??
     centsToNumber(session.amount_total) ??
@@ -441,6 +506,10 @@ exports.handler = async (event, context) => {
     deliveryFeeNumber,
     rushFeeNumber,
     taxNumber,
+    dropoffWindowFeeNumber,
+    pickupWindowFeeNumber,
+    extendedFeeNumber,
+    minOrderFeeNumber,
     totalNumber,
 
     items
