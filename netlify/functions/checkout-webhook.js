@@ -1,21 +1,14 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const jwt = require('jsonwebtoken');
 
-// Lazy initialization functions - only create clients when needed
+// Lazy init clients so builds don’t fail if env vars are missing
 let twilioClient = null;
 let resendClient = null;
 
 function getTwilioClient() {
-  if (
-    !twilioClient &&
-    process.env.TWILIO_ACCOUNT_SID &&
-    process.env.TWILIO_AUTH_TOKEN
-  ) {
+  if (!twilioClient && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
     const twilio = require('twilio');
-    twilioClient = twilio(
-      process.env.TWILIO_ACCOUNT_SID,
-      process.env.TWILIO_AUTH_TOKEN
-    );
+    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   }
   return twilioClient;
 }
@@ -28,11 +21,284 @@ function getResendClient() {
   return resendClient;
 }
 
-exports.handler = async (event, context) => {
+function getNotificationConfig() {
+  const hasTwilio =
+    !!process.env.TWILIO_ACCOUNT_SID &&
+    !!process.env.TWILIO_AUTH_TOKEN &&
+    !!process.env.TWILIO_PHONE_NUMBER &&
+    !!process.env.OWNER_PHONE;
+
+  const hasResend =
+    !!process.env.RESEND_API_KEY &&
+    !!process.env.FROM_EMAIL;
+
+  return {
+    twilio: hasTwilio,
+    resend: hasResend
+  };
+}
+
+/**
+ * Build order/schedule details from the Stripe session metadata
+ * so we can use it consistently in logs + emails.
+ */
+function buildOrderDetails(session) {
+  const metadata = session.metadata || {};
+
+  // Try a few possible key names so we’re resilient to small naming differences
+  const dropoffDate =
+    metadata.dropoffDate ||
+    metadata.dropOffDate ||
+    metadata.deliveryDate ||
+    metadata.eventDate ||
+    '';
+
+  const dropoffWindow =
+    metadata.dropoffWindow ||
+    metadata.dropoffWindowLabel ||
+    metadata.dropoffTimeSlot ||
+    '';
+
+  const pickupDate =
+    metadata.pickupDate ||
+    metadata.returnDate ||
+    '';
+
+  const pickupWindow =
+    metadata.pickupWindow ||
+    metadata.pickupWindowLabel ||
+    metadata.pickupTimeSlot ||
+    '';
+
+  const deliveryAddress =
+    metadata.deliveryAddress ||
+    metadata.address ||
+    '';
+
+  const orderTotal = session.amount_total
+    ? (session.amount_total / 100).toFixed(2)
+    : '0.00';
+
+  const orderSubtotal = metadata.orderSubtotal || '0.00';
+  const deliveryFee = metadata.deliveryFee || '0.00';
+  const rushFee = metadata.rushFee || '0.00';
+
+  const scheduleLinesText = [];
+  if (dropoffDate || dropoffWindow) {
+    scheduleLinesText.push(
+      `Drop-off: ${[dropoffDate, dropoffWindow].filter(Boolean).join(' ')}`
+    );
+  }
+  if (pickupDate || pickupWindow) {
+    scheduleLinesText.push(
+      `Pickup: ${[pickupDate, pickupWindow].filter(Boolean).join(' ')}`
+    );
+  }
+
+  const scheduleSummaryText =
+    scheduleLinesText.length > 0 ? scheduleLinesText.join(' | ') : 'Not provided';
+
+  const scheduleSummaryHtml =
+    scheduleLinesText.length > 0
+      ? scheduleLinesText
+          .map((line) => `<li>${line.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`)
+          .join('')
+      : '<li>Not provided</li>';
+
+  return {
+    dropoffDate: dropoffDate || 'Not provided',
+    dropoffWindow: dropoffWindow || 'Not provided',
+    pickupDate: pickupDate || 'Not provided',
+    pickupWindow: pickupWindow || 'Not provided',
+    deliveryAddress: deliveryAddress || 'Not provided',
+    orderTotal,
+    orderSubtotal,
+    deliveryFee,
+    rushFee,
+    scheduleSummaryText,
+    scheduleSummaryHtml
+  };
+}
+
+/**
+ * Send SMS to owner (for now we’re *not* texting the customer).
+ */
+async function sendTwilioNotifications({ session, orderDetails, approveUrl, declineUrl }) {
+  const config = getNotificationConfig();
+  const client = getTwilioClient();
+
+  if (!config.twilio || !client) {
+    console.log('Twilio not configured, skipping SMS notifications');
+    return;
+  }
+
+  const ownerPhone = process.env.OWNER_PHONE;
+  const total = orderDetails.orderTotal;
+
+  const message = [
+    'New order requires approval.',
+    `Total: $${total}`,
+    orderDetails.scheduleSummaryText !== 'Not provided'
+      ? `Schedule: ${orderDetails.scheduleSummaryText}`
+      : null,
+    '',
+    'Approve:',
+    approveUrl,
+    '',
+    'Decline:',
+    declineUrl
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  try {
+    await client.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: ownerPhone
+    });
+    console.log('SMS notification sent to owner');
+  } catch (err) {
+    console.error('Failed to send owner SMS:', err.message);
+  }
+}
+
+/**
+ * Send emails via Resend (owner + customer).
+ */
+async function sendResendEmails({
+  session,
+  customerName,
+  customerEmail,
+  orderDetails,
+  approveUrl,
+  declineUrl
+}) {
+  const config = getNotificationConfig();
+  const resend = getResendClient();
+
+  if (!config.resend || !resend) {
+    console.log('Resend not configured, skipping email notifications');
+    return;
+  }
+
+  const fromEmail = process.env.FROM_EMAIL || 'orders@kraustables.com';
+  const ownerEmail = process.env.OWNER_EMAIL || 'jonahkraus@gmail.com';
+
+  console.log('Resend from email:', fromEmail);
+  console.log('Owner email:', ownerEmail);
+  console.log('Customer email resolved as:', customerEmail || '(none)');
+
+  // OWNER EMAIL
+  const ownerHtml = `
+    <p>Hi Jonah,</p>
+    <p><strong>New Order Requires Manual Approval</strong></p>
+
+    <p><strong>Customer:</strong> ${customerName || 'Not provided'}<br/>
+    <strong>Email:</strong> ${customerEmail || 'Not provided'}<br/>
+    <strong>Phone:</strong> ${
+      session.customer_details?.phone || session.metadata?.customerPhone || 'Not provided'
+    }</p>
+
+    <p><strong>Schedule:</strong></p>
+    <ul>
+      ${orderDetails.scheduleSummaryHtml}
+    </ul>
+
+    <p><strong>Delivery Address:</strong><br/>
+    ${orderDetails.deliveryAddress}</p>
+
+    <p><strong>Order Summary:</strong></p>
+    <ul>
+      <li>Subtotal: $${orderDetails.orderSubtotal}</li>
+      <li>Delivery Fee: $${orderDetails.deliveryFee}</li>
+      <li>Rush Fee: $${orderDetails.rushFee}</li>
+      <li><strong>Total: $${orderDetails.orderTotal}</strong></li>
+    </ul>
+
+    <p><strong>Action Required:</strong></p>
+    <p>
+      <a href="${approveUrl}"
+         style="display:inline-block;padding:10px 18px;margin-right:10px;background:#16a34a;color:#fff;text-decoration:none;border-radius:4px;">
+        ✅ APPROVE ORDER
+      </a>
+      <a href="${declineUrl}"
+         style="display:inline-block;padding:10px 18px;background:#dc2626;color:#fff;text-decoration:none;border-radius:4px;">
+        ❌ DECLINE ORDER
+      </a>
+    </p>
+
+    <p><small>Note: These links expire in 24 hours. The customer's payment will remain on hold
+    until you approve or decline.</small></p>
+  `;
+
+  // CUSTOMER EMAIL  (content mostly same as before, just no Event Date / Service Type)
+  const customerHtml = `
+    <p>Hi ${customerName || 'there'},</p>
+
+    <p><strong>Thank you for your order!</strong></p>
+
+    <p>We've received your order and we're reviewing the details to make sure everything is
+    perfect for your event.</p>
+
+    <p>We'll confirm your order within a few hours. We'll only charge your card once we confirm
+    we can fulfill your order.</p>
+
+    <p><strong>Order Summary:</strong></p>
+    <ul>
+      <li><strong>Total: $${orderDetails.orderTotal}</strong></li>
+    </ul>
+
+    <p>If you have any questions or need to make changes, just reply to this email.</p>
+
+    <p>– Kraus' Tables & Chairs</p>
+  `;
+
+  try {
+    const ownerResult = await resendClient.emails.send({
+      from: `Kraus Tables & Chairs <${fromEmail}>`,
+      to: [ownerEmail],
+      subject: `⚠️ New Order Needs Approval - ${customerName || 'Customer'}`,
+      html: ownerHtml
+    });
+    console.log('Email notification sent to owner. Resend id:', ownerResult?.id || '(none)');
+  } catch (err) {
+    console.error('Failed to send owner email:', err.message);
+  }
+
+  // Only send customer email if we *have* an address
+  if (!customerEmail) {
+    console.log('No customer email available, skipping customer notification');
+    return;
+  }
+
+  try {
+    const customerResult = await resendClient.emails.send({
+      from: `Kraus Tables & Chairs <${fromEmail}>`,
+      to: [customerEmail],
+      subject: 'Order Received – Pending Confirmation',
+      html: customerHtml
+    });
+    console.log(
+      'Email notification sent to customer. Resend id:',
+      customerResult?.id || '(none)'
+    );
+  } catch (err) {
+    console.error('Failed to send customer email:', err.message);
+  }
+}
+
+exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') {
+    return {
+      statusCode: 405,
+      body: 'Method Not Allowed'
+    };
+  }
+
   const sig = event.headers['stripe-signature'];
 
   let stripeEvent;
-
   try {
     stripeEvent = stripe.webhooks.constructEvent(
       event.body,
@@ -40,357 +306,71 @@ exports.handler = async (event, context) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
+    console.error('⚠️ Webhook signature verification failed.', err.message);
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: `Webhook Error: ${err.message}` })
+      body: `Webhook Error: ${err.message}`
     };
   }
 
-  // Handle the checkout.session.completed event
-  if (stripeEvent.type === 'checkout.session.completed') {
-    const session = stripeEvent.data.object;
-
-    console.log(`Processing ${stripeEvent.type}: ${session.id}`);
-
-    // ALL orders require manual approval - no conditional logic needed
-    console.log('Order requires manual approval - generating approve/decline URLs');
-
-    const paymentIntentId = session.payment_intent;
-    const customerName = session.customer_details?.name || 'Customer';
-    const customerEmail = session.customer_details?.email;
-    const customerPhone = session.customer_details?.phone;
-
-    // ------------------------------------------------------------------
-    // ORDER METADATA MAPPING
-    // ------------------------------------------------------------------
-    // ⬇️ If your actual Stripe metadata keys differ, update them here.
-    const orderDetails = {
-      dropOffDate: session.metadata?.dropOffDate,
-      pickupDate: session.metadata?.pickupDate,
-      dropOffWindow: session.metadata?.dropOffWindow,
-      pickupWindow: session.metadata?.pickupWindow,
-      // Optional descriptive field if you end up using it later:
-      serviceType: session.metadata?.serviceType || 'Full-service delivery & pickup',
-      orderTotal:
-        session.metadata?.orderTotal || session.amount_total / 100,
-      deliveryAddress: session.metadata?.deliveryAddress,
-      subtotal: session.metadata?.subtotal,
-      deliveryFee: session.metadata?.deliveryFee,
-      pickupFee: session.metadata?.pickupFee,
-      rushFee: session.metadata?.rushFee
+  if (stripeEvent.type !== 'checkout.session.completed') {
+    // For now we only care about checkout completion
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ received: true, ignored: stripeEvent.type })
     };
-
-    const scheduleSummary = [
-      orderDetails.dropOffDate
-        ? `Drop-off: ${orderDetails.dropOffDate}${
-            orderDetails.dropOffWindow
-              ? ` (${orderDetails.dropOffWindow})`
-              : ''
-          }`
-        : null,
-      orderDetails.pickupDate
-        ? `Pickup: ${orderDetails.pickupDate}${
-            orderDetails.pickupWindow
-              ? ` (${orderDetails.pickupWindow})`
-              : ''
-          }`
-        : null
-    ]
-      .filter(Boolean)
-      .join(' | ');
-
-    // Create JWT token with order information (expires in 24 hours)
-    const tokenPayload = {
-      paymentIntentId,
-      customerName,
-      customerEmail,
-      customerPhone,
-      orderDetails,
-      sessionId: session.id
-    };
-
-    const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
-      expiresIn: '24h'
-    });
-
-    // Generate approve and decline URLs
-    const siteUrl =
-      process.env.SITE_URL || 'https://enchanting-monstera-41f4df.netlify.app';
-    const approveUrl = `${siteUrl}/.netlify/functions/checkout-approve?token=${token}`;
-    const declineUrl = `${siteUrl}/.netlify/functions/checkout-decline?token=${token}`;
-
-    // Log the URLs prominently
-    console.log('='.repeat(80));
-    console.log('🔔 NEW ORDER REQUIRES APPROVAL 🔔');
-    console.log('='.repeat(80));
-    console.log(`Customer: ${customerName}`);
-    console.log(`Email: ${customerEmail || 'Not provided'}`);
-    console.log(`Phone: ${customerPhone || 'Not provided'}`);
-    console.log(
-      `Drop-off: ${
-        orderDetails.dropOffDate || 'Not provided'
-      } ${orderDetails.dropOffWindow ? `(${orderDetails.dropOffWindow})` : ''}`
-    );
-    console.log(
-      `Pickup: ${
-        orderDetails.pickupDate || 'Not provided'
-      } ${orderDetails.pickupWindow ? `(${orderDetails.pickupWindow})` : ''}`
-    );
-    console.log(
-      `Delivery Address: ${orderDetails.deliveryAddress || 'Not provided'}`
-    );
-    console.log(`Order Total: $${orderDetails.orderTotal}`);
-    if (orderDetails.deliveryFee) {
-      console.log(`Delivery Fee: $${orderDetails.deliveryFee}`);
-    }
-    if (orderDetails.pickupFee) {
-      console.log(`Pickup Fee: $${orderDetails.pickupFee}`);
-    }
-    if (orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0) {
-      console.log(`⚡ Rush Fee Applied: $${orderDetails.rushFee}`);
-    }
-    console.log('-'.repeat(80));
-    console.log('APPROVE URL (click to capture payment):');
-    console.log(approveUrl);
-    console.log('-'.repeat(80));
-    console.log('DECLINE URL (click to cancel payment):');
-    console.log(declineUrl);
-    console.log('='.repeat(80));
-
-    // Check notification services configuration
-    const twilioConfigured = !!(
-      process.env.TWILIO_ACCOUNT_SID &&
-      process.env.TWILIO_AUTH_TOKEN &&
-      process.env.TWILIO_PHONE_NUMBER
-    );
-    const resendConfigured = !!process.env.RESEND_API_KEY;
-
-    console.log(
-      `Notification services configured: { twilio: ${twilioConfigured}, resend: ${resendConfigured} }`
-    );
-
-    // Resolve "from" email (for Resend)
-    const fromEmail =
-      process.env.FROM_EMAIL ||
-      'Kraus Tables & Chairs <orders@kraustables.com>';
-
-    // ------------------------------------------------------------------
-    // OWNER SMS via Twilio
-    // ------------------------------------------------------------------
-    const twilio = getTwilioClient();
-    if (twilio && process.env.OWNER_PHONE && process.env.TWILIO_PHONE_NUMBER) {
-      try {
-        const rushIndicator =
-          orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0
-            ? '⚡ RUSH '
-            : '';
-        await twilio.messages.create({
-          body:
-            `🔔 ${rushIndicator}ORDER from ${customerName}\n` +
-            (scheduleSummary ? `${scheduleSummary}\n` : '') +
-            `Amount: $${orderDetails.orderTotal}\n\n` +
-            `Approve: ${approveUrl}\n` +
-            `Decline: ${declineUrl}`,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          to: process.env.OWNER_PHONE
-        });
-        console.log('SMS notification sent to owner');
-      } catch (smsError) {
-        console.error('Failed to send SMS to owner:', smsError.message);
-      }
-    } else {
-      console.log('Twilio not configured, skipping owner SMS');
-    }
-
-    // ------------------------------------------------------------------
-    // OWNER EMAIL via Resend
-    // ------------------------------------------------------------------
-    const resend = getResendClient();
-    if (resend && process.env.OWNER_EMAIL) {
-      try {
-        const rushBadge =
-          orderDetails.rushFee && parseFloat(orderDetails.rushFee) > 0
-            ? '<span style="background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;">⚡ RUSH</span>'
-            : '';
-
-        const scheduleHtml = `
-          <p><strong>Schedule:</strong></p>
-          <ul>
-            ${
-              orderDetails.dropOffDate
-                ? `<li>Drop-off: ${orderDetails.dropOffDate}${
-                    orderDetails.dropOffWindow
-                      ? ` (${orderDetails.dropOffWindow})`
-                      : ''
-                  }</li>`
-                : ''
-            }
-            ${
-              orderDetails.pickupDate
-                ? `<li>Pickup: ${orderDetails.pickupDate}${
-                    orderDetails.pickupWindow
-                      ? ` (${orderDetails.pickupWindow})`
-                      : ''
-                  }</li>`
-                : ''
-            }
-          </ul>
-        `;
-
-        await resend.emails.send({
-          from: fromEmail,
-          to: process.env.OWNER_EMAIL,
-          subject: `🔔 New Order Needs Approval - ${customerName}`,
-          html: `
-            <h2>New Order Requires Manual Approval ${rushBadge}</h2>
-            <p><strong>Customer:</strong> ${customerName}</p>
-            <p><strong>Email:</strong> ${customerEmail || 'Not provided'}</p>
-            <p><strong>Phone:</strong> ${customerPhone || 'Not provided'}</p>
-            ${
-              orderDetails.deliveryAddress
-                ? `<p><strong>Delivery Address:</strong> ${orderDetails.deliveryAddress}</p>`
-                : ''
-            }
-            ${scheduleHtml}
-            <hr>
-            <p><strong>Order Summary:</strong></p>
-            <ul>
-              ${
-                orderDetails.subtotal
-                  ? `<li>Subtotal: $${orderDetails.subtotal}</li>`
-                  : ''
-              }
-              ${
-                orderDetails.deliveryFee
-                  ? `<li>Delivery Fee: $${orderDetails.deliveryFee}</li>`
-                  : ''
-              }
-              ${
-                orderDetails.pickupFee
-                  ? `<li>Pickup Fee: $${orderDetails.pickupFee}</li>`
-                  : ''
-              }
-              ${
-                orderDetails.rushFee &&
-                parseFloat(orderDetails.rushFee) > 0
-                  ? `<li>⚡ Rush Fee: $${orderDetails.rushFee}</li>`
-                  : ''
-              }
-              <li><strong>Total: $${orderDetails.orderTotal}</strong></li>
-            </ul>
-            <hr>
-            <p><strong>Action Required:</strong></p>
-            <p>
-              <a href="${approveUrl}" style="display: inline-block; padding: 12px 24px; background: #28a745; color: white; text-decoration: none; border-radius: 5px; margin-right: 10px;">
-                ✅ APPROVE ORDER
-              </a>
-              <a href="${declineUrl}" style="display: inline-block; padding: 12px 24px; background: #dc3545; color: white; text-decoration: none; border-radius: 5px;">
-                ❌ DECLINE ORDER
-              </a>
-            </p>
-            <p style="color: #666; font-size: 12px; margin-top: 20px;">
-              Note: These links expire in 24 hours. The customer's payment will remain on hold until you approve or decline.
-            </p>
-          `
-        });
-        console.log('Email notification sent to owner');
-      } catch (emailError) {
-        console.error('Failed to send email to owner:', emailError.message);
-      }
-    } else {
-      console.log('Resend not configured, skipping owner email');
-    }
-
-    // ------------------------------------------------------------------
-    // CUSTOMER SMS (order received / pending)
-    // ------------------------------------------------------------------
-    if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
-      try {
-        const baseLine = `Hi ${customerName}, thank you for your order!`;
-        const scheduleLine = scheduleSummary
-          ? `\nSchedule: ${scheduleSummary}`
-          : '';
-        const footerLine =
-          '\nWe\'re reviewing the details and will confirm within a few hours. - Kraus Tables & Chairs';
-
-        await twilio.messages.create({
-          body: baseLine + scheduleLine + footerLine,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          to: customerPhone
-        });
-        console.log('SMS notification sent to customer');
-      } catch (smsError) {
-        console.error('Failed to send customer SMS:', smsError.message);
-      }
-    } else {
-      console.log('Twilio not configured, skipping customer SMS');
-    }
-
-    // ------------------------------------------------------------------
-    // CUSTOMER EMAIL (order received / pending)
-    // ------------------------------------------------------------------
-    if (resend && customerEmail) {
-      try {
-        const scheduleHtmlCustomer =
-          orderDetails.dropOffDate || orderDetails.pickupDate
-            ? `
-              <h3>Schedule:</h3>
-              <ul>
-                ${
-                  orderDetails.dropOffDate
-                    ? `<li><strong>Drop-off:</strong> ${orderDetails.dropOffDate}${
-                        orderDetails.dropOffWindow
-                          ? ` (${orderDetails.dropOffWindow})`
-                          : ''
-                      }</li>`
-                    : ''
-                }
-                ${
-                  orderDetails.pickupDate
-                    ? `<li><strong>Pickup:</strong> ${orderDetails.pickupDate}${
-                        orderDetails.pickupWindow
-                          ? ` (${orderDetails.pickupWindow})`
-                          : ''
-                      }</li>`
-                    : ''
-                }
-              </ul>
-            `
-            : '';
-
-        await resend.emails.send({
-          from: fromEmail,
-          to: customerEmail,
-          subject: 'Order Received - Pending Confirmation',
-          html: `
-            <h2>Thank You For Your Order!</h2>
-            <p>Hi ${customerName},</p>
-            <p>We've received your order and we're reviewing the details to ensure everything is perfect for your event.</p>
-            <p><strong>We'll confirm your order within a few hours.</strong></p>
-            <p>Your payment of <strong>$${orderDetails.orderTotal}</strong> is authorized but not yet charged. We'll only charge your card once we confirm we can fulfill your order.</p>
-            ${scheduleHtmlCustomer}
-            <h3>Order Summary:</h3>
-            <ul>
-              ${
-                orderDetails.deliveryAddress
-                  ? `<li><strong>Delivery Address:</strong> ${orderDetails.deliveryAddress}</li>`
-                  : ''
-              }
-              <li><strong>Total:</strong> $${orderDetails.orderTotal}</li>
-            </ul>
-            <p>If you have any questions, feel free to reach out!</p>
-            <p>Best regards,<br>Kraus Tables & Chairs</p>
-          `
-        });
-        console.log('Email notification sent to customer');
-      } catch (emailError) {
-        console.error('Failed to send customer email:', emailError.message);
-      }
-    } else {
-      console.log('Resend not configured, skipping customer email');
-    }
   }
+
+  const session = stripeEvent.data.object;
+
+  console.log('=== Processing checkout.session.completed ===');
+  console.log('Session ID:', session.id);
+  console.log('Customer details:', session.customer_details || '(none)');
+  console.log('Raw metadata:', JSON.stringify(session.metadata || {}, null, 2));
+
+  const customerName =
+    session.customer_details?.name || session.metadata?.customerName || 'Customer';
+  const customerEmail =
+    session.customer_details?.email || session.metadata?.customerEmail || null;
+
+  const orderDetails = buildOrderDetails(session);
+
+  console.log('Customer:', customerName);
+  console.log('Customer email:', customerEmail || '(none)');
+  console.log('Schedule summary:', orderDetails.scheduleSummaryText);
+  console.log('Delivery address:', orderDetails.deliveryAddress);
+  console.log('Order total: $' + orderDetails.orderTotal);
+
+  // Create signed token for approve/decline links
+  const tokenPayload = {
+    paymentIntentId: session.payment_intent,
+    customerName,
+    customerEmail,
+    orderDetails,
+    sessionId: session.id
+  };
+
+  const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '24h' });
+
+  const baseUrl =
+    process.env.SITE_URL || 'https://enchanting-monstera-41f4df.netlify.app';
+
+  const approveUrl = `${baseUrl}/.netlify/functions/checkout-approve?token=${token}`;
+  const declineUrl = `${baseUrl}/.netlify/functions/checkout-decline?token=${token}`;
+
+  console.log('Approve URL:', approveUrl);
+  console.log('Decline URL:', declineUrl);
+
+  // Send notifications
+  await sendTwilioNotifications({ session, orderDetails, approveUrl, declineUrl });
+  await sendResendEmails({
+    session,
+    customerName,
+    customerEmail,
+    orderDetails,
+    approveUrl,
+    declineUrl
+  });
 
   return {
     statusCode: 200,
