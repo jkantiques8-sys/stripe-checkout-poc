@@ -212,12 +212,12 @@ const buildOrderSummaryRows = (details) => {
     `);
   };
 
-  addRowIfPositive('Delivery Fee', details.deliveryFeeNumber);
-  addRowIfPositive('Rush Fee', details.rushFeeNumber);
-  addRowIfPositive('Drop-off Time Slot Fee', details.dropoffTimeslotFeeNumber);
-  addRowIfPositive('Pickup Time Slot Fee', details.pickupTimeslotFeeNumber);
-  addRowIfPositive('Extended Rental Fee', details.extendedFeeNumber);
-  addRowIfPositive('Minimum Surcharge', details.minOrderFeeNumber);
+  addRowIfPositive('Delivery fee', details.deliveryFeeNumber);
+  addRowIfPositive('Rush fee', details.rushFeeNumber);
+  addRowIfPositive('Drop-off time slot fee', details.dropoffTimeslotFeeNumber);
+  addRowIfPositive('Pickup time slot fee', details.pickupTimeslotFeeNumber);
+  addRowIfPositive('Extended rental fee', details.extendedFeeNumber);
+  addRowIfPositive('Minimum surcharge', details.minOrderFeeNumber);
   addRowIfPositive('Tax', details.taxNumber);
 
   rows.push(`
