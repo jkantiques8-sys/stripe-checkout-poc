@@ -26,13 +26,13 @@ const EXTENDED_RATE = 0.15;    // 15% per extra day
 const MIN_ORDER = 40000;       // $400 minimum order
 const TAX_RATE = 0.08875;      // 8.875%
 
-// Window fees - base fee for 1-hour prompt window
-const WINDOW_BASE_FEE = {
-  prompt: 10000,  // $100 for 1-hour prompt window
-  flex: 0         // $0 for flexible window
+// Time slot fees - base fee for 1-hour prompt time slot
+const TIMESLOT_BASE_FEE = {
+  prompt: 10000,  // $100 for 1-hour prompt time slot
+  flex: 0         // $0 for flexible time slot
 };
 
-// Time slot fees for 1-hour prompt windows (in cents)
+// Time slot fees for 1-hour prompt time slots (in cents)
 const PROMPT_FEE = {
   6: 7500,   // 6-7am: $75
   7: 5000,   // 7-8am: $50
@@ -44,7 +44,7 @@ const PROMPT_FEE = {
   0: 7500    // 12-1am: $75
 };
 
-// Time slot fees for 4-hour flex windows (in cents)
+// Time slot fees for 4-hour flex time slots (in cents)
 const FLEX_FEE = {
   '8-12': 0,     // Morning: $0
   '12-4': 7500,  // Afternoon: $75
@@ -120,47 +120,47 @@ exports.handler = async (event) => {
       ? Math.max(10000, Math.round(productsSubtotalC * 0.10))  // max of $100 or 10% of items
       : 0;
 
-    // --- Window fees ---
+    // --- Time slot fees ---
     const parseHourStart = (range) => {
       // "6-7" -> 6, "21-22" -> 21, "0-1" -> 0
       const h = parseInt(String(range).split('-')[0], 10);
       return Number.isFinite(h) ? h : null;
     };
 
-    // Dropoff window fee
-    const dropoffType = schedule.dropoff_window_type || 'flex';
-    const dropoffValue = schedule.dropoff_window_value || '';
-    let dropoffWindowC = WINDOW_BASE_FEE[dropoffType] || 0;
+    // Dropoff time slot fee
+    const dropoffType = schedule.dropoff_timeslot_type || 'flex';
+    const dropoffValue = schedule.dropoff_timeslot_value || '';
+    let dropoffTimeslotC = TIMESLOT_BASE_FEE[dropoffType] || 0;
     
     if (dropoffType === 'prompt') {
       const h = parseHourStart(dropoffValue);
-      dropoffWindowC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
+      dropoffTimeslotC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
     } else if (dropoffType === 'flex') {
-      dropoffWindowC += FLEX_FEE[dropoffValue] || 0;
+      dropoffTimeslotC += FLEX_FEE[dropoffValue] || 0;
     }
 
-    // Pickup window fee (no base fee for prompt if same day)
+    // Pickup time slot fee (no base fee for prompt if same day)
     const pickupDate = toDate(schedule.pickup_date);
     const sameDay = dropoffDate && pickupDate && 
                     (schedule.dropoff_date === schedule.pickup_date);
     
-    const pickupType = schedule.pickup_window_type || 'flex';
-    const pickupValue = schedule.pickup_window_value || '';
-    let pickupWindowC = 0;
+    const pickupType = schedule.pickup_timeslot_type || 'flex';
+    const pickupValue = schedule.pickup_timeslot_value || '';
+    let pickupTimeslotC = 0;
     
     // Only add base fee if NOT (prompt AND same day)
     if (pickupType === 'prompt' && !sameDay) {
-      pickupWindowC += WINDOW_BASE_FEE[pickupType] || 0;
+      pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     } else if (pickupType === 'flex') {
-      pickupWindowC += WINDOW_BASE_FEE[pickupType] || 0;
+      pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     }
     
     // Always add time slot fee
     if (pickupType === 'prompt') {
       const h = parseHourStart(pickupValue);
-      pickupWindowC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
+      pickupTimeslotC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
     } else if (pickupType === 'flex') {
-      pickupWindowC += FLEX_FEE[pickupValue] || 0;
+      pickupTimeslotC += FLEX_FEE[pickupValue] || 0;
     }
 
     // --- Extended rental fee (15% per extra day after first day) ---
@@ -169,8 +169,8 @@ exports.handler = async (event) => {
     const extendedC = Math.round(productsSubtotalC * EXTENDED_RATE * extraDays);
 
     // --- Minimum order surcharge ---
-    // Minimum includes: items + delivery + rush + window fees + extended
-    const towardMinC = productsSubtotalC + deliveryC + rushC + dropoffWindowC + pickupWindowC + extendedC;
+    // Minimum includes: items + delivery + rush + time slot fees + extended
+    const towardMinC = productsSubtotalC + deliveryC + rushC + dropoffTimeslotC + pickupTimeslotC + extendedC;
     const minC = Math.max(0, MIN_ORDER - towardMinC);
 
     // --- Tax calculation ---
@@ -216,33 +216,33 @@ exports.handler = async (event) => {
       });
     }
 
-    // Add dropoff window fee
-    if (dropoffWindowC > 0) {
+    // Add dropoff time slot fee
+    if (dropoffTimeslotC > 0) {
       const dropoffLabel = dropoffType === 'prompt' 
-        ? `Drop-off: 1-hour window (${dropoffValue})` 
-        : `Drop-off: 4-hour window (${dropoffValue})`;
+        ? `Drop-off: 1-hour time slot (${dropoffValue})` 
+        : `Drop-off: 4-hour time slot (${dropoffValue})`;
       
       line_items.push({
         price_data: {
           currency: 'usd',
           product_data: { name: dropoffLabel },
-          unit_amount: dropoffWindowC,
+          unit_amount: dropoffTimeslotC,
         },
         quantity: 1,
       });
     }
 
-    // Add pickup window fee
-    if (pickupWindowC > 0) {
+    // Add pickup time slot fee
+    if (pickupTimeslotC > 0) {
       const pickupLabel = pickupType === 'prompt' 
-        ? `Pickup: 1-hour window (${pickupValue})` 
-        : `Pickup: 4-hour window (${pickupValue})`;
+        ? `Pickup: 1-hour time slot (${pickupValue})` 
+        : `Pickup: 4-hour time slot (${pickupValue})`;
       
       line_items.push({
         price_data: {
           currency: 'usd',
           product_data: { name: pickupLabel },
-          unit_amount: pickupWindowC,
+          unit_amount: pickupTimeslotC,
         },
         quantity: 1,
       });
@@ -310,11 +310,11 @@ exports.handler = async (event) => {
           customer_email: customer.email || '',
           // Schedule
           dropoff_date: schedule.dropoff_date || '',
-          dropoff_window_type: schedule.dropoff_window_type || '',
-          dropoff_window_value: schedule.dropoff_window_value || '',
+          dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
+          dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
           pickup_date: schedule.pickup_date || '',
-          pickup_window_type: schedule.pickup_window_type || '',
-          pickup_window_value: schedule.pickup_window_value || '',
+          pickup_timeslot_type: schedule.pickup_timeslot_type || '',
+          pickup_timeslot_value: schedule.pickup_timeslot_value || '',
         }
       },
       metadata: {
@@ -332,19 +332,19 @@ exports.handler = async (event) => {
         location_notes: (location.notes || '').substring(0, 500),
         // Schedule
         dropoff_date: schedule.dropoff_date || '',
-        dropoff_window_type: schedule.dropoff_window_type || '',
-        dropoff_window_value: schedule.dropoff_window_value || '',
+        dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
+        dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
         pickup_date: schedule.pickup_date || '',
-        pickup_window_type: schedule.pickup_window_type || '',
-        pickup_window_value: schedule.pickup_window_value || '',
+        pickup_timeslot_type: schedule.pickup_timeslot_type || '',
+        pickup_timeslot_value: schedule.pickup_timeslot_value || '',
         // Products
         items: JSON.stringify(validItems).substring(0, 500),
         // Pricing breakdown
         products_subtotal_cents: String(productsSubtotalC),
         delivery_cents: String(deliveryC),
         rush_cents: String(rushC),
-        dropoff_window_cents: String(dropoffWindowC),
-        pickup_window_cents: String(pickupWindowC),
+        dropoff_timeslot_cents: String(dropoffTimeslotC),
+        pickup_timeslot_cents: String(pickupTimeslotC),
         extra_days: String(extraDays),
         extended_cents: String(extendedC),
         min_order_cents: String(minC),
