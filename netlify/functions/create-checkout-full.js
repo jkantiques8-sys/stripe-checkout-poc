@@ -51,6 +51,40 @@ const FLEX_FEE = {
   '4-8': 0       // Evening: $0
 };
 
+
+
+// Helper function to format time slot value to 12-hour AM/PM format
+const formatTimeSlot = (value) => {
+  if (!value) return value;
+  
+  // Special handling for known flex slot patterns
+  const flexMap = {
+    '8-12': '8AM–12PM',
+    '12-4': '12PM–4PM',
+    '4-8': '4PM–8PM'
+  };
+  
+  if (flexMap[value]) {
+    return flexMap[value];
+  }
+  
+  // Otherwise, format as 24-hour time slot (for prompt slots)
+  const match = /^(\d{1,2})-(\d{1,2})$/.exec(value.trim());
+  if (!match) return value;
+  
+  const [, startStr, endStr] = match;
+  const start = Number(startStr);
+  const end = Number(endStr);
+  
+  const formatHour = (h) => {
+    const normalized = ((h % 24) + 24) % 24;
+    const suffix = normalized >= 12 ? 'PM' : 'AM';
+    const hour12 = normalized % 12 === 0 ? 12 : normalized % 12;
+    return `${hour12}${suffix}`;
+  };
+  
+  return `${formatHour(start)}–${formatHour(end)}`;
+};
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -219,8 +253,8 @@ exports.handler = async (event) => {
     // Add dropoff time slot fee
     if (dropoffTimeslotC > 0) {
       const dropoffLabel = dropoffType === 'prompt' 
-        ? `Drop-off: 1-hour time slot (${dropoffValue})` 
-        : `Drop-off: 4-hour time slot (${dropoffValue})`;
+        ? `Drop-off: 1-hour time slot (${formatTimeSlot(dropoffValue)})` 
+        : `Drop-off: 4-hour time slot (${formatTimeSlot(dropoffValue)})`;
       
       line_items.push({
         price_data: {
@@ -235,8 +269,8 @@ exports.handler = async (event) => {
     // Add pickup time slot fee
     if (pickupTimeslotC > 0) {
       const pickupLabel = pickupType === 'prompt' 
-        ? `Pickup: 1-hour time slot (${pickupValue})` 
-        : `Pickup: 4-hour time slot (${pickupValue})`;
+        ? `Pickup: 1-hour time slot (${formatTimeSlot(pickupValue)})` 
+        : `Pickup: 4-hour time slot (${formatTimeSlot(pickupValue)})`;
       
       line_items.push({
         price_data: {
