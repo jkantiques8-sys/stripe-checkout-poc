@@ -71,6 +71,19 @@ const formatDate = (isoDate) => {
 // Convert "23-24" -> "11PM–12AM", "12-4" -> "12PM–4PM" etc.
 const formatHourRange = (value) => {
   if (!value) return null;
+  
+  // Special handling for known flex slot patterns
+  const flexMap = {
+    '8-12': '8AM–12PM',
+    '12-4': '12PM–4PM',
+    '4-8': '4PM–8PM'
+  };
+  
+  if (flexMap[value]) {
+    return flexMap[value];
+  }
+  
+  // Otherwise, format as 24-hour time slot (for prompt slots)
   const match = /^(\d{1,2})-(\d{1,2})$/.exec(value.trim());
   if (!match) return value;
 
@@ -88,6 +101,7 @@ const formatHourRange = (value) => {
 
   return `${fmt(start)}–${fmt(end)}`;
 };
+
 
 const formatTimeSlot = (value, type) => {
   if (!value) return 'Not provided';
