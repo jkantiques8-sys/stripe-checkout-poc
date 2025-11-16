@@ -89,7 +89,7 @@ const formatHourRange = (value) => {
   return `${fmt(start)}–${fmt(end)}`;
 };
 
-const formatWindow = (value, type) => {
+const formatTimeSlot = (value, type) => {
   if (!value) return 'Not provided';
 
   const pretty = formatHourRange(value);
@@ -100,16 +100,16 @@ const formatWindow = (value, type) => {
 
 const summarizeSchedule = (details) => {
   const dropoff = details.dropoffDate
-    ? `${formatDate(details.dropoffDate)} (${formatWindow(
-        details.dropoffWindowValue,
-        details.dropoffWindowType
+    ? `${formatDate(details.dropoffDate)} (${formatTimeSlot(
+        details.dropoffTimeslotValue,
+        details.dropoffTimeslotType
       )})`
     : 'Not provided';
 
   const pickup = details.pickupDate
-    ? `${formatDate(details.pickupDate)} (${formatWindow(
-        details.pickupWindowValue,
-        details.pickupWindowType
+    ? `${formatDate(details.pickupDate)} (${formatTimeSlot(
+        details.pickupTimeslotValue,
+        details.pickupTimeslotType
       )})`
     : 'Not provided';
 
@@ -214,8 +214,8 @@ const buildOrderSummaryRows = (details) => {
 
   addRowIfPositive('Delivery Fee', details.deliveryFeeNumber);
   addRowIfPositive('Rush Fee', details.rushFeeNumber);
-  addRowIfPositive('Drop-off Window Fee', details.dropoffWindowFeeNumber);
-  addRowIfPositive('Pickup Window Fee', details.pickupWindowFeeNumber);
+  addRowIfPositive('Drop-off Time Slot Fee', details.dropoffTimeslotFeeNumber);
+  addRowIfPositive('Pickup Time Slot Fee', details.pickupTimeslotFeeNumber);
   addRowIfPositive('Extended Rental Fee', details.extendedFeeNumber);
   addRowIfPositive('Minimum Surcharge', details.minOrderFeeNumber);
   addRowIfPositive('Tax', details.taxNumber);
@@ -461,11 +461,11 @@ exports.handler = async (event, context) => {
   const rushFeeNumber = centsToNumber(metadata.rush_cents);
   const taxNumber = centsToNumber(metadata.tax_cents);
 
-  const dropoffWindowFeeNumber = centsToNumber(
-    metadata.dropoff_window_cents
+  const dropoffTimeslotFeeNumber = centsToNumber(
+    metadata.dropoff_timeslot_cents
   );
-  const pickupWindowFeeNumber = centsToNumber(
-    metadata.pickup_window_cents
+  const pickupTimeslotFeeNumber = centsToNumber(
+    metadata.pickup_timeslot_cents
   );
   const extendedFeeNumber = centsToNumber(metadata.extended_cents);
   const minOrderFeeNumber = centsToNumber(metadata.min_order_cents);
@@ -486,11 +486,11 @@ exports.handler = async (event, context) => {
 
     // schedule
     dropoffDate: metadata.dropoff_date || null,
-    dropoffWindowValue: metadata.dropoff_window_value || null,
-    dropoffWindowType: metadata.dropoff_window_type || null,
+    dropoffTimeslotValue: metadata.dropoff_timeslot_value || null,
+    dropoffTimeslotType: metadata.dropoff_timeslot_type || null,
     pickupDate: metadata.pickup_date || null,
-    pickupWindowValue: metadata.pickup_window_value || null,
-    pickupWindowType: metadata.pickup_window_type || null,
+    pickupTimeslotValue: metadata.pickup_timeslot_value || null,
+    pickupTimeslotType: metadata.pickup_timeslot_type || null,
     extraDays: metadata.extra_days || null,
 
     // address
@@ -506,8 +506,8 @@ exports.handler = async (event, context) => {
     deliveryFeeNumber,
     rushFeeNumber,
     taxNumber,
-    dropoffWindowFeeNumber,
-    pickupWindowFeeNumber,
+    dropoffTimeslotFeeNumber,
+    pickupTimeslotFeeNumber,
     extendedFeeNumber,
     minOrderFeeNumber,
     totalNumber,
