@@ -47,7 +47,7 @@ const PROMPT_FEE = {
 // Time slot fees for 4-hour flex time slots (in cents)
 const FLEX_FEE = {
   '8-12': 0,     // Morning: $0
-  '12-4': 7500,  // Afternoon: $75
+  '12-4': 5000,  // Afternoon: $50
   '4-8': 0       // Evening: $0
 };
 
