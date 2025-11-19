@@ -32,7 +32,6 @@ exports.handler = async (event) => {
   }
 
   try {
-    // accept token via GET ?token=... or POST { token }
     const qsToken = event.queryStringParameters && event.queryStringParameters.token;
     let bodyToken = null;
     if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
@@ -51,7 +50,6 @@ exports.handler = async (event) => {
 
     const { paymentIntentId, customerName, customerEmail, customerPhone } = decoded;
 
-    // ✅ STATUS GUARD: Don’t cancel once succeeded/processing
     const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
     if (pi.status === 'succeeded' || pi.status === 'processing') {
       return {
@@ -65,10 +63,12 @@ exports.handler = async (event) => {
       };
     }
 
-    // Cancel (void the auth)
     const paymentIntent = await stripe.paymentIntents.cancel(paymentIntentId);
 
-    // Optional notifications
+    // -----------------------------------------------------
+    // 🚫 SMS DISABLED — preserved but commented out
+    // -----------------------------------------------------
+    /*
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
@@ -79,6 +79,9 @@ exports.handler = async (event) => {
         });
       } catch (e) { console.error('SMS error:', e.message); }
     }
+    */
+    // -----------------------------------------------------
+
     const resend = getResendClient();
     if (resend && customerEmail) {
       try {
