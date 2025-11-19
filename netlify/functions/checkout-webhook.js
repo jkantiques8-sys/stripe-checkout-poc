@@ -559,11 +559,19 @@ exports.handler = async (event, context) => {
   const twilioClient = getTwilioClient();
   const smsEnabled = !!(twilioClient && OWNER_PHONE && TWILIO_FROM);
   const resendEnabled = !!resend && !!FROM_EMAIL;
-
+  
+  console.log('Twilio env present:', {
+    hasSid: !!process.env.TWILIO_ACCOUNT_SID,
+    hasToken: !!process.env.TWILIO_AUTH_TOKEN,
+    hasFrom: !!TWILIO_FROM,
+    hasOwner: !!OWNER_PHONE
+  });
+  
   console.log('Notification services configured:', {
     twilio: smsEnabled,
     resend: resendEnabled
   });
+  
 
   // ---- Send SMS to owner (short summary) ----------------------------------
 
