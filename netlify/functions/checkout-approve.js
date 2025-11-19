@@ -33,7 +33,6 @@ exports.handler = async (event) => {
   }
 
   try {
-    // accept token via GET ?token=... or POST { token }
     const qsToken = event.queryStringParameters && event.queryStringParameters.token;
     let bodyToken = null;
     if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
@@ -52,7 +51,6 @@ exports.handler = async (event) => {
 
     const { paymentIntentId, customerName, customerEmail, customerPhone, orderDetails } = decoded;
 
-    // ✅ STATUS GUARD: Only capture if capturable
     const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
     if (pi.status !== 'requires_capture' || (pi.amount_capturable ?? 0) <= 0) {
       return {
@@ -66,10 +64,12 @@ exports.handler = async (event) => {
       };
     }
 
-    // Capture
     const paymentIntent = await stripe.paymentIntents.capture(paymentIntentId);
 
-    // Optional notifications
+    // -----------------------------------------------------
+    // 🚫 SMS DISABLED — preserved but commented out
+    // -----------------------------------------------------
+    /*
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
@@ -80,6 +80,9 @@ exports.handler = async (event) => {
         });
       } catch (e) { console.error('SMS error:', e.message); }
     }
+    */
+    // -----------------------------------------------------
+
     const resend = getResendClient();
     if (resend && customerEmail) {
       try {
