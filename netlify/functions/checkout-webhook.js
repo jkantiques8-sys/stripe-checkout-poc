@@ -479,8 +479,13 @@ const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     <p style="margin:0;">
       <strong>Name:</strong> ${details.customerName || 'Not provided'}<br/>
       <strong>Email:</strong> ${details.customerEmail || 'Not provided'}<br/>
-      <strong>Phone:</strong> ${details.customerPhone || 'Not provided'}
+      <strong>Phone:</strong> ${
+        details.customerPhone
+          ? `<a href="tel:${details.customerPhone}" style="color:#432F28;text-decoration:underline;">${details.customerPhone}</a>`
+          : 'Not provided'
+      }
     </p>
+
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Order Details</h3>
     ${chairsHtml}
