@@ -576,7 +576,7 @@ const buildOwnerSms = (details) => {
   const schedule = summarizeSchedule(details);
 
   return (
-    `🚐 New DELIVERY order ${formatMoney(details.totalNumber)} – ${
+    `🚚 New DELIVERY order ${formatMoney(details.totalNumber)} – ${
       details.customerName || 'New customer'
     }\n` +
     `Drop-off: ${schedule.dropoff}\n` +
@@ -591,7 +591,7 @@ const buildSelfOwnerSms = (details) => {
   const total = formatMoney(details.totalNumber);
 
   return [
-    `🙋‍♀️📦 New SELF-SERVICE order ${total}`,
+    `🙋‍♀️ New SELF-SERVICE order ${total}`,
     details.customerName ? `Customer: ${details.customerName}` : null,
     `Pickup: ${schedule.pickup}`,
     `Return: ${schedule.returnDate}`,
@@ -813,8 +813,8 @@ const orderDetails = {
     const isSelfServiceFlow = orderDetails.flow === 'self_service';
 
     const ownerSubject = isSelfServiceFlow
-      ? '🚐 New Pickup Order'
-      : '🙋‍♀️📦 New Delivery Order';
+      ? '🙋‍♀️ New Pickup Order'
+      : '🚚 New Delivery Order';
     
     const ownerHtml = isSelfServiceFlow
       ? buildSelfOwnerEmailHtml(orderDetails, approveUrl, declineUrl)
