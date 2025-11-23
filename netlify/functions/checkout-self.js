@@ -137,22 +137,28 @@ exports.handler = async (event) => {
       cancel_url:  cancel_url  || 'https://example.com',
       customer_email: customer.email || undefined,
       metadata: {
-        flow: 'self_service',        // <— NEW
+        flow: 'self_service',               // identify this flow for the webhook
       
-        name,
-        phone,
-        qty_dark: String(clampedDark),
+        name:  customer.name  || '',
+        phone: customer.phone || '',
+      
+        qty_dark:  String(clampedDark),
         qty_light: String(clampedLight),
-        pickup_date,
-        return_date,
+        pickup_date:  pickup_date  || '',
+        return_date:  return_date  || '',
         chairs_subtotal_cents: String(chairsSubtotalC),
-        rush_cents: String(rushC),
-        ext_days: String(extDays),
+        rush_cents:    String(rushC),
+        ext_days:      String(extDays),
         ext_fee_cents: String(extFeeC),
-        min_cents: String(minC),
-        tax_cents: String(taxC),
-        // ...utm, etc
-      },
+        min_cents:     String(minC),
+        tax_cents:     String(taxC),
+      
+        // if you’re still passing it:
+        // deposit_cents: String(depositC),
+      
+        ...utm
+      }
+      
       
     });
 
