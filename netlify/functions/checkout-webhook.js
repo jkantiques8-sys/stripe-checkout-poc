@@ -581,8 +581,7 @@ const buildOwnerSms = (details, approveUrl, declineUrl) => {
     }\n` +
     `Drop-off: ${schedule.dropoff}\n` +
     `Pickup: ${schedule.pickup}\n` +
-    (schedule.extraLabel ? `Extra: ${schedule.extraLabel}\n` : '') +
-    `Approve: ${approveUrl}\nDecline: ${declineUrl}`
+    (schedule.extraLabel ? `Extra: ${schedule.extraLabel}\n` : '')
   );
 };
 
@@ -596,9 +595,7 @@ const buildSelfOwnerSms = (details, approveUrl, declineUrl) => {
     details.customerName ? `Customer: ${details.customerName}` : null,
     `Pickup: ${schedule.pickup}`,
     `Return: ${schedule.returnDate}`,
-    schedule.extraLabel ? `Extended: ${schedule.extraLabel}` : null,
-    `Approve: ${approveUrl}`,
-    `Decline: ${declineUrl}`
+    schedule.extraLabel ? `Extended: ${schedule.extraLabel}` : null
   ]
     .filter(Boolean)
     .join('\n');
