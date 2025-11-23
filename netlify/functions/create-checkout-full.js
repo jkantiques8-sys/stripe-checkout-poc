@@ -23,7 +23,7 @@ const PRICE_MAP = {
 // Fee rates
 const DELIVERY_RATE = 0.30;    // 30% of items subtotal
 const EXTENDED_RATE = 0.15;    // 15% per extra day
-const MIN_ORDER = 40000;       // $400 minimum order
+const MIN_ORDER = 30000;       // $300 minimum order
 const TAX_RATE = 0.08875;      // 8.875%
 
 // Time slot fees - base fee for 1-hour prompt time slot
@@ -299,7 +299,7 @@ exports.handler = async (event) => {
       line_items.push({
         price_data: {
           currency: 'usd',
-          product_data: { name: 'Minimum order surcharge (to $400)' },
+          product_data: { name: 'Minimum order surcharge (to $300)' },
           unit_amount: minC,
         },
         quantity: 1,
