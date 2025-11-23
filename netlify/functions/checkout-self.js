@@ -7,7 +7,6 @@ const UNIT = 1000;                             // $10 per chair => 1000 cents
 const EXT_RATE   = 0.15;                       // 15% per extra day
 const RUSH_FEE   = 2500;                       // $25 flat
 const MIN_ORDER  = 5000;                      // $50 before tax/deposit
-const DEPOSIT_RATE = 0.5;                      // 50% of chairs
 const TAX_RATE   = 0.08875;                    // 8.875%
 
 const PRICE_MAP = {
@@ -74,7 +73,6 @@ exports.handler = async (event) => {
 
     const taxC  = Math.round((baseC + minC) * TAX_RATE);
 
-    const depositC = Math.round(chairsSubtotalC * DEPOSIT_RATE);
 
     // --- Build line items for Stripe ---
     const line_items = [];
@@ -123,12 +121,7 @@ exports.handler = async (event) => {
         quantity: 1,
       });
     }
-    if (depositC > 0) {
-      line_items.push({
-        price_data: { currency: 'usd', product_data: { name: 'Refundable deposit (50% of chairs)' }, unit_amount: depositC },
-        quantity: 1,
-      });
-    }
+
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
@@ -153,8 +146,6 @@ exports.handler = async (event) => {
         min_cents:     String(minC),
         tax_cents:     String(taxC),
       
-        // if you’re still passing it:
-        // deposit_cents: String(depositC),
       
         ...utm
       }
