@@ -6,7 +6,7 @@ const USD = v => Math.round(v);                // cents already
 const UNIT = 1000;                             // $10 per chair => 1000 cents
 const EXT_RATE   = 0.15;                       // 15% per extra day
 const RUSH_FEE   = 2500;                       // $25 flat
-const MIN_ORDER  = 10000;                      // $100 before tax/deposit
+const MIN_ORDER  = 5000;                      // $50 before tax/deposit
 const DEPOSIT_RATE = 0.5;                      // 50% of chairs
 const TAX_RATE   = 0.08875;                    // 8.875%
 
@@ -113,7 +113,7 @@ exports.handler = async (event) => {
     }
     if (minC > 0) {
       line_items.push({
-        price_data: { currency: 'usd', product_data: { name: 'Minimum order surcharge (to $100)' }, unit_amount: minC },
+        price_data: { currency: 'usd', product_data: { name: 'Minimum order surcharge (to $50)' }, unit_amount: minC },
         quantity: 1,
       });
     }
