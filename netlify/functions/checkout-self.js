@@ -137,21 +137,23 @@ exports.handler = async (event) => {
       cancel_url:  cancel_url  || 'https://example.com',
       customer_email: customer.email || undefined,
       metadata: {
-        name: customer.name || '',
-        phone: customer.phone || '',
+        flow: 'self_service',        // <— NEW
+      
+        name,
+        phone,
         qty_dark: String(clampedDark),
         qty_light: String(clampedLight),
-        pickup_date: pickup_date || '',
-        return_date: return_date || '',
+        pickup_date,
+        return_date,
         chairs_subtotal_cents: String(chairsSubtotalC),
         rush_cents: String(rushC),
         ext_days: String(extDays),
         ext_fee_cents: String(extFeeC),
         min_cents: String(minC),
         tax_cents: String(taxC),
-        deposit_cents: String(depositC),
-        ...utm
-      }
+        // ...utm, etc
+      },
+      
     });
 
     return {
