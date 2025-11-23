@@ -536,6 +536,12 @@ const buildSelfCustomerEmailHtml = (details) => {
         ? `<p style="margin:0 0 4px;"><strong>Extended rental:</strong> ${schedule.extraLabel}</p>`
         : ''
     }
+    <h3 style="margin:24px 0 8px;font-size:15px;">Contact Info</h3>
+    <p style="margin:0;">
+      <strong>Name:</strong> ${details.customerName || 'Not provided'}<br/>
+      <strong>Email:</strong> ${details.customerEmail || 'Not provided'}<br/>
+      <strong>Phone:</strong> ${details.customerPhone || 'Not provided'}
+    </p>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Order Summary</h3>
     <table cellspacing="0" cellpadding="0" style="font-size:14px;">
@@ -805,8 +811,8 @@ const orderDetails = {
     const isSelfServiceFlow = orderDetails.flow === 'self_service';
 
     const ownerSubject = isSelfServiceFlow
-      ? 'New Self-Service Order – Action Required'
-      : 'New Order – Action Required';
+      ? '⚠️ New Pickup Order'
+      : '⚠️ New Delivery Order';
     
     const ownerHtml = isSelfServiceFlow
       ? buildSelfOwnerEmailHtml(orderDetails, approveUrl, declineUrl)
