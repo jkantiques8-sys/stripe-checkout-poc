@@ -428,7 +428,7 @@ const buildCustomerEmailHtml = (details) => {
     </table>
 
     <p style="margin-top:16px;">
-      We'll confirm your order within a few hours. We'll only charge your card
+      We'll confirm your order within 2 business hours. We'll only charge your card
       once we confirm we can fulfill your order.
     </p>
 
@@ -556,8 +556,8 @@ const buildSelfCustomerEmailHtml = (details) => {
     </table>
 
     <p style="margin-top:16px;">
-      We’ll confirm your order within a few business hours. Your card will
-      <strong>not be charged</strong> until we confirm your pickup and return times.
+      We’ll confirm your order within 2 business hours. Your card will
+      <strong>not be charged</strong> until we call to confirm your pickup and return times.
     </p>
 
     <p style="margin-top:16px;">
@@ -813,16 +813,16 @@ const orderDetails = {
     const isSelfServiceFlow = orderDetails.flow === 'self_service';
 
     const ownerSubject = isSelfServiceFlow
-      ? '⚠️ New Pickup Order'
-      : '⚠️ New Delivery Order';
+      ? '🚚 New Pickup Order'
+      : '🙋‍♀️📦 New Delivery Order';
     
     const ownerHtml = isSelfServiceFlow
       ? buildSelfOwnerEmailHtml(orderDetails, approveUrl, declineUrl)
       : buildOwnerEmailHtml(orderDetails, approveUrl, declineUrl);
     
     const customerSubject = isSelfServiceFlow
-      ? 'Order Received – Self Pickup Pending Confirmation'
-      : 'Order Received – Pending Confirmation';
+      ? 'Self Service Order Received – Pending Confirmation'
+      : 'Full Service Order Received – Pending Confirmation';
     
     const customerHtml = isSelfServiceFlow
       ? buildSelfCustomerEmailHtml(orderDetails)
