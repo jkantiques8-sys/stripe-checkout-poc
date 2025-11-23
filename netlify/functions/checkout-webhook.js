@@ -141,6 +141,30 @@ const summarizeSchedule = (details) => {
   };
 };
 
+const summarizeSelfSchedule = (details) => {
+  const pickup = details.pickupDate
+    ? formatDate(details.pickupDate)
+    : 'Not provided';
+
+  const returnDate = details.returnDate
+    ? formatDate(details.returnDate)
+    : 'Not provided';
+
+  const extraDays =
+    details.extraDays && Number(details.extraDays) > 0
+      ? Number(details.extraDays)
+      : 0;
+
+  return {
+    pickup,
+    returnDate,
+    extraDays,
+    extraLabel:
+      extraDays > 0 ? `${extraDays} extra day${extraDays > 1 ? 's' : ''}` : ''
+  };
+};
+
+
 const decodeItems = (rawItems) => {
   if (!rawItems) return [];
   try {
@@ -417,6 +441,124 @@ const buildCustomerEmailHtml = (details) => {
   `;
 };
 
+const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
+  const schedule = summarizeSelfSchedule(details);
+  const items = details.items || [];
+  const itemsHtml = buildItemsHtml(items);
+
+  const chairLines = [];
+  if (details.selfQtyDark) chairLines.push(`${details.selfQtyDark} × dark chairs`);
+  if (details.selfQtyLight) chairLines.push(`${details.selfQtyLight} × light chairs`);
+
+  const chairsHtml =
+    chairLines.length > 0
+      ? `<p style="margin:0 0 12px;"><strong>Chairs:</strong> ${chairLines.join(
+          ' & '
+        )}</p>`
+      : '';
+
+  return `
+  <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;color:#432F28;line-height:1.5;">
+    <h2 style="margin:0 0 16px;font-size:20px;">New Self-Service Order – Needs Review</h2>
+
+    <p style="margin:0 0 12px;">
+      A new <strong>self-service chair rental</strong> order was submitted on the website.
+      Review the details below and capture or cancel the payment using the links at the bottom.
+    </p>
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
+    <p style="margin:0 0 4px;"><strong>Pickup:</strong> ${schedule.pickup}</p>
+    <p style="margin:0 0 4px;"><strong>Return:</strong> ${schedule.returnDate}</p>
+    ${
+      schedule.extraLabel
+        ? `<p style="margin:0 0 4px;"><strong>Extended rental:</strong> ${schedule.extraLabel}</p>`
+        : ''
+    }
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Contact Info</h3>
+    <p style="margin:0;">
+      <strong>Name:</strong> ${details.customerName || 'Not provided'}<br/>
+      <strong>Email:</strong> ${details.customerEmail || 'Not provided'}<br/>
+      <strong>Phone:</strong> ${details.customerPhone || 'Not provided'}
+    </p>
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Order Details</h3>
+    ${chairsHtml}
+    ${itemsHtml}
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Order Summary</h3>
+    <table cellspacing="0" cellpadding="0" style="font-size:14px;">
+      <tbody>
+        ${buildOrderSummaryRows(details)}
+      </tbody>
+    </table>
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
+    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
+
+    <p style="margin:0 0 4px;">
+      <a href="${approveUrl}"
+         style="display:inline-block;margin-right:12px;padding:10px 16px;border-radius:4px;background:#2f855a;color:#fff;text-decoration:none;">
+        Approve &amp; Capture
+      </a>
+      <a href="${declineUrl}"
+         style="display:inline-block;padding:10px 16px;border-radius:4px;background:#c53030;color:#fff;text-decoration:none;">
+        Decline &amp; Release Hold
+      </a>
+    </p>
+
+    <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
+  </div>
+  `;
+};
+
+const buildSelfCustomerEmailHtml = (details) => {
+  const schedule = summarizeSelfSchedule(details);
+
+  return `
+  <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;color:#432F28;line-height:1.5;">
+    <h2 style="margin:0 0 16px;font-size:20px;">Order Received – Self Pickup Pending Confirmation</h2>
+
+    <p style="margin:0 0 12px;">
+      Hi ${details.customerName || 'there'},
+    </p>
+
+    <p style="margin:0 0 12px;">
+      Thanks for booking <strong>self-service chair rentals</strong> with Kraus’ Tables &amp; Chairs.
+      We’ve received your order and will review it shortly.
+    </p>
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
+    <p style="margin:0 0 4px;"><strong>Pickup:</strong> ${schedule.pickup}</p>
+    <p style="margin:0 0 4px;"><strong>Return:</strong> ${schedule.returnDate}</p>
+    ${
+      schedule.extraLabel
+        ? `<p style="margin:0 0 4px;"><strong>Extended rental:</strong> ${schedule.extraLabel}</p>`
+        : ''
+    }
+
+    <h3 style="margin:24px 0 8px;font-size:15px;">Order Summary</h3>
+    <table cellspacing="0" cellpadding="0" style="font-size:14px;">
+      <tbody>
+        ${buildOrderSummaryRows(details)}
+      </tbody>
+    </table>
+
+    <p style="margin-top:16px;">
+      We’ll confirm your order within a few business hours. Your card will
+      <strong>not be charged</strong> until we confirm your pickup and return times.
+    </p>
+
+    <p style="margin-top:16px;">
+      If you have questions or need to adjust your pickup, just reply to this email.
+    </p>
+
+    <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
+  </div>
+  `;
+};
+
+
 // ==== SMS builder (short!) ==================================================
 
 const buildOwnerSms = (details, approveUrl, declineUrl) => {
@@ -432,6 +574,25 @@ const buildOwnerSms = (details, approveUrl, declineUrl) => {
     `Approve: ${approveUrl}\nDecline: ${declineUrl}`
   );
 };
+
+const buildSelfOwnerSms = (details, approveUrl, declineUrl) => {
+  const schedule = summarizeSelfSchedule(details);
+
+  const total = formatMoney(details.totalNumber);
+
+  return [
+    `New SELF-SERVICE order ${total}`,
+    details.customerName ? `Customer: ${details.customerName}` : null,
+    `Pickup: ${schedule.pickup}`,
+    `Return: ${schedule.returnDate}`,
+    schedule.extraLabel ? `Extended: ${schedule.extraLabel}` : null,
+    `Approve: ${approveUrl}`,
+    `Decline: ${declineUrl}`
+  ]
+    .filter(Boolean)
+    .join('\n');
+};
+
 
 // ==== Main handler ==========================================================
 
@@ -468,66 +629,111 @@ exports.handler = async (event, context) => {
   console.log('Customer details:', customerDetails);
   console.log('Raw metadata:', metadata);
 
-  // ---- Map metadata into a normalized orderDetails object ------------------
+// ---- Map metadata into a normalized orderDetails object ------------------
 
-  const subtotalNumber = centsToNumber(metadata.products_subtotal_cents);
-  const deliveryFeeNumber = centsToNumber(metadata.delivery_cents);
-  const rushFeeNumber = centsToNumber(metadata.rush_cents);
-  const taxNumber = centsToNumber(metadata.tax_cents);
+// Determine flow: full-service vs self-service
+const flow =
+  metadata.flow ||
+  (metadata.chairs_subtotal_cents ? 'self_service' : 'full_service');
+const isSelfService = flow === 'self_service';
 
-  const dropoffTimeslotFeeNumber = centsToNumber(
+// Money values
+let subtotalNumber,
+  deliveryFeeNumber,
+  rushFeeNumber,
+  taxNumber,
+  dropoffTimeslotFeeNumber,
+  pickupTimeslotFeeNumber,
+  extendedFeeNumber,
+  minOrderFeeNumber;
+
+if (isSelfService) {
+  // Self-service chairs
+  subtotalNumber = centsToNumber(metadata.chairs_subtotal_cents);
+  deliveryFeeNumber = null; // no delivery line
+  rushFeeNumber = centsToNumber(metadata.rush_cents);
+  taxNumber = centsToNumber(metadata.tax_cents);
+  dropoffTimeslotFeeNumber = null;
+  pickupTimeslotFeeNumber = null;
+  extendedFeeNumber = centsToNumber(metadata.ext_fee_cents);
+  minOrderFeeNumber = centsToNumber(metadata.min_cents);
+} else {
+  // Full-service delivery
+  subtotalNumber = centsToNumber(metadata.products_subtotal_cents);
+  deliveryFeeNumber = centsToNumber(metadata.delivery_cents);
+  rushFeeNumber = centsToNumber(metadata.rush_cents);
+  taxNumber = centsToNumber(metadata.tax_cents);
+  dropoffTimeslotFeeNumber = centsToNumber(
     metadata.dropoff_timeslot_cents
   );
-  const pickupTimeslotFeeNumber = centsToNumber(
+  pickupTimeslotFeeNumber = centsToNumber(
     metadata.pickup_timeslot_cents
   );
-  const extendedFeeNumber = centsToNumber(metadata.extended_cents);
-  const minOrderFeeNumber = centsToNumber(metadata.min_order_cents);
+  extendedFeeNumber = centsToNumber(metadata.extended_cents);
+  minOrderFeeNumber = centsToNumber(metadata.min_order_cents);
+}
 
-  const totalNumber =
-    centsToNumber(metadata.total_cents) ??
-    centsToNumber(session.amount_total) ??
-    0;
+const totalNumber =
+  centsToNumber(metadata.total_cents) ??
+  centsToNumber(session.amount_total) ??
+  0;
 
-  const items = decodeItems(metadata.items);
+const items = decodeItems(metadata.items);
 
-  const orderDetails = {
-    customerName:
-      metadata.name || customerDetails.name || 'Not provided',
-    customerEmail:
-      customerDetails.email || metadata.email || 'Not provided',
-    customerPhone: metadata.phone || customerDetails.phone || null,
+const orderDetails = {
+  flow,
+  customerName:
+    metadata.customer_name || metadata.name || customerDetails.name || 'Not provided',
+  customerEmail:
+    customerDetails.email ||
+    metadata.customer_email ||
+    metadata.email ||
+    'Not provided',
+  customerPhone:
+    metadata.customer_phone || metadata.phone || customerDetails.phone || null,
 
-    // schedule
-    dropoffDate: metadata.dropoff_date || null,
-    dropoffTimeslotValue: metadata.dropoff_timeslot_value || null,
-    dropoffTimeslotType: metadata.dropoff_timeslot_type || null,
-    pickupDate: metadata.pickup_date || null,
-    pickupTimeslotValue: metadata.pickup_timeslot_value || null,
-    pickupTimeslotType: metadata.pickup_timeslot_type || null,
-    extraDays: metadata.extra_days || null,
+  // schedule
+  dropoffDate: isSelfService ? null : metadata.dropoff_date || null,
+  dropoffTimeslotValue: isSelfService
+    ? null
+    : metadata.dropoff_timeslot_value || null,
+  dropoffTimeslotType: isSelfService
+    ? null
+    : metadata.dropoff_timeslot_type || null,
+  pickupDate: metadata.pickup_date || null,
+  pickupTimeslotValue: metadata.pickup_timeslot_value || null,
+  pickupTimeslotType: metadata.pickup_timeslot_type || null,
+  returnDate: metadata.return_date || null,
+  extraDays: isSelfService
+    ? metadata.ext_days || null
+    : metadata.extra_days || null,
 
-    // address
-    street: metadata.street || null,
-    address2: metadata.address2 || null,
-    city: metadata.city || null,
-    state: metadata.state || null,
-    zip: metadata.zip || null,
-    locationNotes: metadata.location_notes || null,
+  // address (used only for full-service)
+  street: metadata.street || null,
+  address2: metadata.address2 || null,
+  city: metadata.city || null,
+  state: metadata.state || null,
+  zip: metadata.zip || null,
+  locationNotes: metadata.location_notes || null,
 
-    // financials
-    subtotalNumber,
-    deliveryFeeNumber,
-    rushFeeNumber,
-    taxNumber,
-    dropoffTimeslotFeeNumber,
-    pickupTimeslotFeeNumber,
-    extendedFeeNumber,
-    minOrderFeeNumber,
-    totalNumber,
+  // self-service chair counts (for email copy)
+  selfQtyDark: metadata.qty_dark ? Number(metadata.qty_dark) : null,
+  selfQtyLight: metadata.qty_light ? Number(metadata.qty_light) : null,
 
-    items
-  };
+  // financials
+  subtotalNumber,
+  deliveryFeeNumber,
+  rushFeeNumber,
+  taxNumber,
+  dropoffTimeslotFeeNumber,
+  pickupTimeslotFeeNumber,
+  extendedFeeNumber,
+  minOrderFeeNumber,
+  totalNumber,
+
+  items
+};
+
 
   console.log('Customer:', orderDetails.customerName);
   console.log('Customer email:', orderDetails.customerEmail);
@@ -577,7 +783,9 @@ exports.handler = async (event, context) => {
 
   if (smsEnabled) {
     try {
-      const smsBody = buildOwnerSms(orderDetails, approveUrl, declineUrl);
+      const smsBody = orderDetails.flow === 'self_service'
+        ? buildSelfOwnerSms(orderDetails, approveUrl, declineUrl)
+        : buildOwnerSms(orderDetails, approveUrl, declineUrl);  
       await twilioClient.messages.create({
         from: TWILIO_FROM,
         to: OWNER_PHONE,
@@ -594,15 +802,23 @@ exports.handler = async (event, context) => {
   // ---- Send emails via Resend ---------------------------------------------
 
   if (resendEnabled) {
-    const ownerSubject = `⚠️ New Order Needs Approval - ${orderDetails.customerName}`;
-    const ownerHtml = buildOwnerEmailHtml(
-      orderDetails,
-      approveUrl,
-      declineUrl
-    );
+    const isSelfServiceFlow = orderDetails.flow === 'self_service';
 
-    const customerSubject = 'Order Received – Pending Confirmation';
-    const customerHtml = buildCustomerEmailHtml(orderDetails);
+    const ownerSubject = isSelfServiceFlow
+      ? 'New Self-Service Order – Action Required'
+      : 'New Order – Action Required';
+    
+    const ownerHtml = isSelfServiceFlow
+      ? buildSelfOwnerEmailHtml(orderDetails, approveUrl, declineUrl)
+      : buildOwnerEmailHtml(orderDetails, approveUrl, declineUrl);
+    
+    const customerSubject = isSelfServiceFlow
+      ? 'Order Received – Self Pickup Pending Confirmation'
+      : 'Order Received – Pending Confirmation';
+    
+    const customerHtml = isSelfServiceFlow
+      ? buildSelfCustomerEmailHtml(orderDetails)
+      : buildCustomerEmailHtml(orderDetails);    
 
     console.log('Resend from email:', FROM_EMAIL);
     console.log('Owner email:', OWNER_EMAIL);
