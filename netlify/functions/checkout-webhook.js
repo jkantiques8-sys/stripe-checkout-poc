@@ -436,6 +436,10 @@ const buildCustomerEmailHtml = (details) => {
       If you have any questions or need to make changes, just reply to this email.
     </p>
 
+    <p style="margin-top:16px;">
+      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
+    </p>
+
     <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
   </div>
   `;
@@ -562,6 +566,10 @@ const buildSelfCustomerEmailHtml = (details) => {
 
     <p style="margin-top:16px;">
       If you have questions or need to make changes, just reply to this email.
+    </p>
+
+    <p style="margin-top:16px;">
+      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
     </p>
 
     <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
