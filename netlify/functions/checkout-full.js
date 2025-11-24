@@ -328,7 +328,7 @@ exports.handler = async (event) => {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       line_items,
-      success_url: success_url || 'https://example.com/thank-you',
+      success_url: success_url || 'https://example.com/thank-you-full-service',
       cancel_url: cancel_url || 'https://example.com',
       customer_email: customer.email || undefined,
       // ALL ORDERS USE MANUAL CAPTURE
