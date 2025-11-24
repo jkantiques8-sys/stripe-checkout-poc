@@ -561,7 +561,7 @@ const buildSelfCustomerEmailHtml = (details) => {
     </p>
 
     <p style="margin-top:16px;">
-      If you have questions or need to adjust your pickup, just reply to this email.
+      If you have questions or need to make changes, just reply to this email.
     </p>
 
     <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
