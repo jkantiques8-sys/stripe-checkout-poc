@@ -386,7 +386,7 @@ const buildCustomerEmailHtml = (details) => {
 
     <p><strong>Thank you for your order!</strong></p>
 
-    <p>Your card has not been charged yet—this is an authorization only. We’ll review your order and confirm availability before capturing payment. If we need clarification or if any additional charges apply, we’ll call you first.</p>
+    <p>Your card is not being charged yet—this is an authorization only. We’ll review your order and confirm availability before capturing payment. We usually confirm orders within 2 business hours. If we need clarification or if any additional charges apply, we’ll call you first.</p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
