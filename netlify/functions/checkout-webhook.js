@@ -386,10 +386,7 @@ const buildCustomerEmailHtml = (details) => {
 
     <p><strong>Thank you for your order!</strong></p>
 
-    <p>
-      We've received your order and we're reviewing the details to make sure
-      everything is perfect for your event.
-    </p>
+    <p>Your card has not been charged yet—this is an authorization only. We’ll review your order and confirm availability before capturing payment. If we need clarification or if any additional charges apply, we’ll call you first.</p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
@@ -533,9 +530,8 @@ const buildSelfCustomerEmailHtml = (details) => {
     </p>
 
     <p style="margin:0 0 12px;">
-      Thanks for booking <strong>self-service chair rentals</strong> with Kraus’ Tables &amp; Chairs.
-      We’ve received your order and will review it shortly.
-    </p>
+      Thanks for booking <strong>self-service chair rentals</strong> with Kraus’ Tables &amp; Chairs.<p>
+    <p style="margin:0 0 12px;">Your card has not been charged yet—this is an authorization only. We’ll call you within 2 hours to confirm your pickup and drop-off details, and we’ll only capture payment once everything is approved.</p>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
     <p style="margin:0 0 4px;"><strong>Pickup:</strong> ${schedule.pickup}</p>
