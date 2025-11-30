@@ -334,6 +334,12 @@ exports.handler = async (event) => {
       // ALL ORDERS USE MANUAL CAPTURE
       payment_intent_data: {
         capture_method: 'manual',
+        custom_text: {
+          submit: {
+            message:
+              "This is an authorization only. Your card will not be charged until we review and confirm your order with you by phone."
+          }
+        },
         metadata: {
           flow: 'full_service',
           rush: String(isRush),  // Store rush flag
