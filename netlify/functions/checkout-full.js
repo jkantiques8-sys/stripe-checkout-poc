@@ -326,6 +326,12 @@ exports.handler = async (event) => {
 
     // --- Create Stripe checkout session with MANUAL CAPTURE ---
     const session = await stripe.checkout.sessions.create({
+      custom_text: {
+        submit: {
+          message:
+            "This is an authorization only. Your card will not be charged until we review and confirm your order with you by phone."
+        }
+      },
       mode: 'payment',
       line_items,
       success_url: success_url || 'https://example.com/thank-you-full-service',
