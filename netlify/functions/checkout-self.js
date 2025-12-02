@@ -131,7 +131,7 @@ exports.handler = async (event) => {
       custom_text: {
         submit: {
           message:
-            "Your card is not beening charged yet—this is an authorization only. We’ll call within 2 business hours to confirm your order and finalize pickup. Only then will your card be charged."
+            "Your card has not been charged—this is an authorization only. We’ll call within 2 business hours to confirm your order and finalize pickup. Only then will your card be charged."
         }
       },
       line_items,
