@@ -382,11 +382,28 @@ const buildCustomerEmailHtml = (details) => {
 
   return `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
-    <p>Hi ${details.customerName || ''},</p>
 
-    <p><strong>Thank you for your order!</strong></p>
+  <h2 style="margin:0 0 16px;font-size:20px;">Request Received – Pending Confirmation</h2>
 
-    <p>Your card is not being charged yet—this is an authorization only. We’ll review your order and confirm availability before capturing payment. We usually confirm orders within 2 business hours. If we need clarification or if any additional charges apply, we’ll call you first.</p>
+<p>Hi ${details.customerName || 'there'},</p>
+
+<p>
+  Thank you for submitting your <strong>full-service rental request</strong> with 
+  Kraus’ Tables &amp; Chairs. We’ve received your information and are reviewing 
+  availability, logistics, and delivery requirements.
+</p>
+
+<p>
+  <strong>Your card has not been charged—this is an authorization only.</strong>  
+</p>
+
+<p>
+  We will only capture payment after your request is approved. We usually approve requests withing 2 business hours. If clarification is needed or additional charges apply, we will call you before proceeding.
+</p>
+
+<p>
+  Need to make changes? Just reply to this email.
+</p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
@@ -523,15 +540,31 @@ const buildSelfCustomerEmailHtml = (details) => {
 
   return `
   <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;color:#432F28;line-height:1.5;">
-    <h2 style="margin:0 0 16px;font-size:20px;">Order Received – Self Pickup Pending Confirmation</h2>
+<h2 style="margin:0 0 16px;font-size:20px;">Request Received – Pending Confirmation</h2>
 
-    <p style="margin:0 0 12px;">
-      Hi ${details.customerName || 'there'},
-    </p>
+<p>Hi ${details.customerName || 'there'},</p>
 
-    <p style="margin:0 0 12px;">
-      Thanks for booking <strong>self-service chair rentals</strong> with Kraus’ Tables &amp; Chairs.<p>
-    <p style="margin:0 0 12px;">Your card has not been charged yet—this is an authorization only. We’ll call you within 2 hours to confirm your pickup and drop-off details, and we’ll only capture payment once everything is approved.</p>
+<p>
+  Thank you for submitting your request for <strong>self-service chair rentals</strong> with Kraus’ Tables &amp; Chairs.
+</p>
+
+<p>
+  <strong>Your card has not been charged—this is an authorization only.</strong>  
+  We’ll call you within 2 hours to review your request and finalize your pickup plan:
+</p>
+
+<ul>
+  <li><strong>Self-pickup</strong> at our Brooklyn location (24-hour lockbox access)</li>
+  <li><strong>Uber or rideshare pickup</strong> — we’ll pack your order for your driver</li>
+</ul>
+
+<p>
+  Once your request is approved and all details are confirmed, we will capture payment.  
+</p>
+
+<p>
+  Need to make changes? Simply reply to this email.
+</p>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
     <p style="margin:0 0 4px;"><strong>Pickup:</strong> ${schedule.pickup}</p>
@@ -825,8 +858,8 @@ const orderDetails = {
       : buildOwnerEmailHtml(orderDetails, approveUrl, declineUrl);
     
     const customerSubject = isSelfServiceFlow
-      ? 'Self Service Order Received – Pending Confirmation'
-      : 'Full Service Order Received – Pending Confirmation';
+      ? 'Self Service Request Received – Pending Confirmation'
+      : 'Full Service Request Received – Pending Confirmation';
     
     const customerHtml = isSelfServiceFlow
       ? buildSelfCustomerEmailHtml(orderDetails)
