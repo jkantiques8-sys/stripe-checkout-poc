@@ -329,7 +329,7 @@ exports.handler = async (event) => {
       custom_text: {
         submit: {
           message:
-            "Your card is not being charged yet—this is an authorization only. We’ll review your order and confirm availability before capturing payment. We usually confirm orders within 2 business hours. If any details need clarification or if additional fees may apply based on your location or venue, we’ll call you first."
+            "Your card will not be charged—this is an authorization only. We’ll review your request within two business hours and confirm availability before capturing payment. If any details need clarification or if additional fees apply based on your location or venue, we’ll call you first."
         }
       },
       mode: 'payment',
