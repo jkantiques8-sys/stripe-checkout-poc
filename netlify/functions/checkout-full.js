@@ -26,6 +26,31 @@ const EXTENDED_RATE = 0.15;    // 15% per extra day
 const MIN_ORDER = 30000;       // $300 minimum order
 const TAX_RATE = 0.08875;      // 8.875%
 
+// Manhattan congestion surcharge
+const CONGESTION_FEE_CENTS = 7500; // $75
+const MANHATTAN_ZIPS = [
+  // Lower Manhattan / Midtown / UWS / UES / Harlem / Washington Heights / Inwood
+  "10001","10002","10003","10004","10005","10006","10007","10009","10010","10011","10012","10013","10014",
+  "10016","10017","10018","10019","10020","10021","10022","10023","10024","10025","10026","10027","10028","10029",
+  "10030","10031","10032","10033","10034","10035","10036","10037","10038","10039","10040",
+  // Roosevelt Island
+  "10044",
+  // Common UES variants
+  "10065","10075","10128",
+  // Battery Park City / FiDi area
+  "10280","10281","10282"
+];
+
+function normalizeZip(zip) {
+  // Supports "10001" and "10001-1234"
+  return String(zip || '').trim().slice(0, 5);
+}
+
+function isManhattanZip(zip) {
+  const z = normalizeZip(zip);
+  return z.length === 5 && MANHATTAN_ZIPS.includes(z);
+}
+
 // Time slot fees - base fee for 1-hour prompt time slot
 const TIMESLOT_BASE_FEE = {
   prompt: 10000,  // $100 for 1-hour prompt time slot
@@ -51,40 +76,39 @@ const FLEX_FEE = {
   '4-8': 0       // Evening: $0
 };
 
-
-
 // Helper function to format time slot value to 12-hour AM/PM format
 const formatTimeSlot = (value) => {
   if (!value) return value;
-  
+
   // Special handling for known flex slot patterns
   const flexMap = {
     '8-12': '8AM–12PM',
     '12-4': '12PM–4PM',
     '4-8': '4PM–8PM'
   };
-  
+
   if (flexMap[value]) {
     return flexMap[value];
   }
-  
+
   // Otherwise, format as 24-hour time slot (for prompt slots)
-  const match = /^(\d{1,2})-(\d{1,2})$/.exec(value.trim());
+  const match = /^(\d{1,2})-(\d{1,2})$/.exec(String(value).trim());
   if (!match) return value;
-  
+
   const [, startStr, endStr] = match;
   const start = Number(startStr);
   const end = Number(endStr);
-  
+
   const formatHour = (h) => {
     const normalized = ((h % 24) + 24) % 24;
     const suffix = normalized >= 12 ? 'PM' : 'AM';
     const hour12 = normalized % 12 === 0 ? 12 : normalized % 12;
     return `${hour12}${suffix}`;
   };
-  
+
   return `${formatHour(start)}–${formatHour(end)}`;
 };
+
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -99,16 +123,16 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { 
-      flow, 
-      items = [], 
-      customer = {}, 
+    const {
+      flow,
+      items = [],
+      customer = {},
       location = {},
       schedule = {},
-      isRush = false,  // NEW: rush flag from frontend
-      utm = {}, 
-      success_url, 
-      cancel_url 
+      isRush = false, // (kept) rush flag from frontend if you decide to send it
+      utm = {},
+      success_url,
+      cancel_url
     } = JSON.parse(event.body || '{}');
 
     // Validate flow
@@ -123,7 +147,7 @@ exports.handler = async (event) => {
     for (const item of items) {
       const sku = item.sku;
       const qty = Math.max(0, Number(item.qty) || 0);
-      
+
       if (qty > 0 && PRICE_MAP[sku]) {
         const priceInfo = PRICE_MAP[sku];
         productsSubtotalC += priceInfo.unit * qty;
@@ -138,19 +162,23 @@ exports.handler = async (event) => {
     // --- Calculate delivery fee (30% of items) ---
     const deliveryC = Math.round(productsSubtotalC * DELIVERY_RATE);
 
+    // --- Manhattan congestion surcharge (flat $75 for Manhattan ZIPs) ---
+    const zip5 = normalizeZip(location.zip);
+    const congestionC = isManhattanZip(zip5) ? CONGESTION_FEE_CENTS : 0;
+
     // --- Rush fee (if drop-off is within 2 days) ---
     const toDate = (s) => s ? new Date(`${s}T00:00:00`) : null;
     const dropoffDate = toDate(schedule.dropoff_date);
     const todayDate = new Date();
     todayDate.setHours(0, 0, 0, 0);
-    
+
     const daysBetween = (a, b) => {
       if (!a || !b) return 0;
       return Math.max(0, Math.round((b - a) / (1000 * 60 * 60 * 24)));
     };
-    
+
     const daysUntilDropoff = daysBetween(todayDate, dropoffDate);
-    const rushC = (dropoffDate && daysUntilDropoff <= 2) 
+    const rushC = (dropoffDate && daysUntilDropoff <= 2)
       ? Math.max(10000, Math.round(productsSubtotalC * 0.10))  // max of $100 or 10% of items
       : 0;
 
@@ -165,7 +193,7 @@ exports.handler = async (event) => {
     const dropoffType = schedule.dropoff_timeslot_type || 'flex';
     const dropoffValue = schedule.dropoff_timeslot_value || '';
     let dropoffTimeslotC = TIMESLOT_BASE_FEE[dropoffType] || 0;
-    
+
     if (dropoffType === 'prompt') {
       const h = parseHourStart(dropoffValue);
       dropoffTimeslotC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
@@ -175,20 +203,20 @@ exports.handler = async (event) => {
 
     // Pickup time slot fee (no base fee for prompt if same day)
     const pickupDate = toDate(schedule.pickup_date);
-    const sameDay = dropoffDate && pickupDate && 
+    const sameDay = dropoffDate && pickupDate &&
                     (schedule.dropoff_date === schedule.pickup_date);
-    
+
     const pickupType = schedule.pickup_timeslot_type || 'flex';
     const pickupValue = schedule.pickup_timeslot_value || '';
     let pickupTimeslotC = 0;
-    
+
     // Only add base fee if NOT (prompt AND same day)
     if (pickupType === 'prompt' && !sameDay) {
       pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     } else if (pickupType === 'flex') {
       pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     }
-    
+
     // Always add time slot fee
     if (pickupType === 'prompt') {
       const h = parseHourStart(pickupValue);
@@ -203,8 +231,16 @@ exports.handler = async (event) => {
     const extendedC = Math.round(productsSubtotalC * EXTENDED_RATE * extraDays);
 
     // --- Minimum order surcharge ---
-    // Minimum includes: items + delivery + rush + time slot fees + extended
-    const towardMinC = productsSubtotalC + deliveryC + rushC + dropoffTimeslotC + pickupTimeslotC + extendedC;
+    // Minimum includes: items + delivery + congestion + rush + time slot fees + extended
+    const towardMinC =
+      productsSubtotalC +
+      deliveryC +
+      congestionC +
+      rushC +
+      dropoffTimeslotC +
+      pickupTimeslotC +
+      extendedC;
+
     const minC = Math.max(0, MIN_ORDER - towardMinC);
 
     // --- Tax calculation ---
@@ -238,6 +274,18 @@ exports.handler = async (event) => {
       });
     }
 
+    // Add Manhattan congestion surcharge
+    if (congestionC > 0) {
+      line_items.push({
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'Manhattan congestion surcharge' },
+          unit_amount: congestionC,
+        },
+        quantity: 1,
+      });
+    }
+
     // Add rush fee
     if (rushC > 0) {
       line_items.push({
@@ -252,10 +300,10 @@ exports.handler = async (event) => {
 
     // Add dropoff time slot fee
     if (dropoffTimeslotC > 0) {
-      const dropoffLabel = dropoffType === 'prompt' 
-        ? `Drop-off: 1-hour time slot (${formatTimeSlot(dropoffValue)})` 
+      const dropoffLabel = dropoffType === 'prompt'
+        ? `Drop-off: 1-hour time slot (${formatTimeSlot(dropoffValue)})`
         : `Drop-off: 4-hour time slot (${formatTimeSlot(dropoffValue)})`;
-      
+
       line_items.push({
         price_data: {
           currency: 'usd',
@@ -268,10 +316,10 @@ exports.handler = async (event) => {
 
     // Add pickup time slot fee
     if (pickupTimeslotC > 0) {
-      const pickupLabel = pickupType === 'prompt' 
-        ? `Pickup: 1-hour time slot (${formatTimeSlot(pickupValue)})` 
+      const pickupLabel = pickupType === 'prompt'
+        ? `Pickup: 1-hour time slot (${formatTimeSlot(pickupValue)})`
         : `Pickup: 4-hour time slot (${formatTimeSlot(pickupValue)})`;
-      
+
       line_items.push({
         price_data: {
           currency: 'usd',
@@ -342,7 +390,8 @@ exports.handler = async (event) => {
         capture_method: 'manual',
         metadata: {
           flow: 'full_service',
-          rush: String(isRush),  // Store rush flag
+          rush: String(isRush), // Store frontend rush flag if provided
+          congestion: String(congestionC > 0),
           order_summary: orderSummary,
           // Customer info
           customer_name: customer.name || '',
@@ -360,6 +409,7 @@ exports.handler = async (event) => {
       metadata: {
         flow: 'full_service',
         rush: String(isRush),
+        congestion: String(congestionC > 0),
         name: customer.name || '',
         phone: customer.phone || '',
         email: customer.email || '',
@@ -369,6 +419,7 @@ exports.handler = async (event) => {
         city: location.city || '',
         state: location.state || '',
         zip: location.zip || '',
+        zip5: zip5 || '',
         location_notes: (location.notes || '').substring(0, 500),
         // Schedule
         dropoff_date: schedule.dropoff_date || '',
@@ -382,6 +433,7 @@ exports.handler = async (event) => {
         // Pricing breakdown
         products_subtotal_cents: String(productsSubtotalC),
         delivery_cents: String(deliveryC),
+        congestion_cents: String(congestionC),
         rush_cents: String(rushC),
         dropoff_timeslot_cents: String(dropoffTimeslotC),
         pickup_timeslot_cents: String(pickupTimeslotC),
