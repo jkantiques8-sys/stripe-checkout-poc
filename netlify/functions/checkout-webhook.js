@@ -338,7 +338,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </table>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
-    <p style="margin:0 0 12px;">Approve or decline the request (no charge is made until approval):</p>
+    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
 
     <p>
       <a href="${approveUrl}"
@@ -352,7 +352,8 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </p>
 
     <p style="margin-top:16px;font-size:12px;color:#555;">
-      Note: These links expire in 30 days. No charge is made at checkout; the customer's card is saved securely until you approve or decline.
+      Note: These links expire in 24 hours. The customer's payment will remain
+      on hold until you approve or decline.
     </p>
   </div>
   `;
@@ -393,15 +394,15 @@ const buildCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-  <strong>No charge yet—your card details were collected securely.</strong>  
+  <strong>Your card has not been charged—this is an authorization only.</strong>  
 </p>
 
 <p>
-  We will only charge your card after your request is approved. We usually approve requests within 2 business hours. If clarification is needed or additional charges apply, we will call you before proceeding.
+  We will only capture payment after your request is approved. We usually approve requests withing 2 business hours. If clarification is needed or additional charges apply, we will call you before proceeding.
 </p>
 
 <p>
-  Need to make changes? Reply to this email and we'll help.
+  Need to make changes? Just reply to this email.
 </p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
@@ -480,7 +481,7 @@ const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
 
     <p style="margin:0 0 12px;">
       A new <strong>self-service chair rental</strong> order was submitted on the website.
-      Review the details below and approve or decline using the links at the bottom.
+      Review the details below and capture or cancel the payment using the links at the bottom.
     </p>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
@@ -516,16 +517,16 @@ const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </table>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
-    <p style="margin:0 0 12px;">Approve or decline the request (no charge is made until approval):</p>
+    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
 
     <p style="margin:0 0 4px;">
       <a href="${approveUrl}"
          style="display:inline-block;margin-right:12px;padding:10px 16px;border-radius:4px;background:#2f855a;color:#fff;text-decoration:none;">
-        Approve &amp; Charge
+        Approve &amp; Capture
       </a>
       <a href="${declineUrl}"
          style="display:inline-block;padding:10px 16px;border-radius:4px;background:#c53030;color:#fff;text-decoration:none;">
-        Decline (no charge)
+        Decline &amp; Release Hold
       </a>
     </p>
 
@@ -548,7 +549,7 @@ const buildSelfCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-  <strong>No charge yet—your card details were collected securely.</strong>  
+  <strong>Your card has not been charged—this is an authorization only.</strong>  
   We’ll call you within 2 hours to review your request and finalize your pickup plan:
 </p>
 
@@ -558,7 +559,7 @@ const buildSelfCustomerEmailHtml = (details) => {
 </ul>
 
 <p>
-  Once your request is approved and all details are confirmed, we will charge your card in full for your self-service order.  
+  Once your request is approved and all details are confirmed, we will capture payment.  
 </p>
 
 <p>
@@ -785,19 +786,21 @@ const orderDetails = {
   // ---- Build approve / decline URLs (JWT token) ----------------------------
 
   const tokenPayload = {
-    // New flow uses Checkout SETUP mode (save card, no charge).
-    setupIntentId: session.setup_intent || null,
-    stripeCustomerId: session.customer || metadata.stripe_customer_id || null,
-    flow: orderDetails.flow,
+    setupIntentId: session.setup_intent,
+    customerId: session.customer,
     customerName: orderDetails.customerName,
     customerEmail: orderDetails.customerEmail,
     customerPhone: orderDetails.customerPhone,
-    // Include full order details so approval can charge and invoice without another database.
-    orderDetails,
+    orderDetails: {
+      total: orderDetails.totalNumber,
+      total_cents: metadata.total_cents || '',
+      dropoff_date: metadata.dropoff_date || '',
+      flow: metadata.flow || 'full_service'
+    },
     sessionId: session.id
   };
 
-  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '30d' });
+  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
 
   const approveUrl = `${SITE_URL}/.netlify/functions/checkout-approve?token=${token}`;
   const declineUrl = `${SITE_URL}/.netlify/functions/checkout-decline?token=${token}`;
