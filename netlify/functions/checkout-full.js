@@ -405,79 +405,59 @@ exports.handler = async (event) => {
       .join(', ')
       .substring(0, 350);
 
-    // --- Create Stripe checkout session with MANUAL CAPTURE ---
-    const session = await stripe.checkout.sessions.create({
-      custom_text: {
-        submit: {
-          message:
-            "Your card will not be charged—this is an authorization only. We’ll review your request within two business hours and confirm availability before capturing payment. If any details need clarification or if additional fees apply based on your location or venue, we’ll call you first."
-        }
-      },
-      mode: 'payment',
-      line_items,
-      success_url: success_url || 'https://example.com/thank-you-full-service',
-      cancel_url: cancel_url || 'https://example.com',
-      customer_email: customer.email || undefined,
-      // ALL ORDERS USE MANUAL CAPTURE
-      payment_intent_data: {
-        capture_method: 'manual',
-        metadata: {
-          flow: 'full_service',
-          rush: String(isRush), // Store frontend rush flag if provided
-          congestion: String(congestionC > 0),
-          order_summary: orderSummary,
-          // Customer info
-          customer_name: customer.name || '',
-          customer_phone: customer.phone || '',
-          customer_email: customer.email || '',
-          // Schedule
-          dropoff_date: schedule.dropoff_date || '',
-          dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
-          dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
-          pickup_date: schedule.pickup_date || '',
-          pickup_timeslot_type: schedule.pickup_timeslot_type || '',
-          pickup_timeslot_value: schedule.pickup_timeslot_value || '',
-        }
-      },
-      metadata: {
-        flow: 'full_service',
-        rush: String(isRush),
-        congestion: String(congestionC > 0),
-        name: customer.name || '',
-        phone: customer.phone || '',
-        email: customer.email || '',
-        // Location
-        street: location.street || '',
-        address2: location.address2 || '',
-        city: location.city || '',
-        state: location.state || '',
-        zip: location.zip || '',
-        zip5: zip5 || '',
-        location_notes: (location.notes || '').substring(0, 350),
-        // Schedule
-        dropoff_date: schedule.dropoff_date || '',
-        dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
-        dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
-        pickup_date: schedule.pickup_date || '',
-        pickup_timeslot_type: schedule.pickup_timeslot_type || '',
-        pickup_timeslot_value: schedule.pickup_timeslot_value || '',
-        // Products
-        items: JSON.stringify(validItems).substring(0, 350),
-        // Pricing breakdown
-        products_subtotal_cents: String(productsSubtotalC),
-        delivery_cents: String(deliveryC),
-        congestion_cents: String(congestionC),
-        rush_cents: String(rushC),
-        dropoff_timeslot_cents: String(dropoffTimeslotC),
-        pickup_timeslot_cents: String(pickupTimeslotC),
-        extra_days: String(extraDays),
-        extended_cents: String(extendedC),
-        min_order_cents: String(minC),
-        tax_cents: String(taxC),
-        total_cents: String(taxableC + taxC),
-        ...sanitizeUtm(utm)
-      }
-    });
+// --- Create Stripe Checkout session to SAVE CARD ONLY (no charge) ---
+const session = await stripe.checkout.sessions.create({
+  mode: 'setup',
+  success_url: success_url || 'https://example.com/thank-you-full-service',
+  cancel_url: cancel_url || 'https://example.com',
+  customer_email: customer.email || undefined,
+
+  // Put all order data into metadata so webhook + approval can use it
+  metadata: {
+    flow: 'full_service',
+    // pricing
+    total_cents: String(totalC),
+    products_subtotal_cents: String(productsSubtotalC),
+    delivery_cents: String(deliveryC),
+    congestion_cents: String(congestionC),
+    rush_cents: String(rushC),
+    dropoff_timeslot_cents: String(dropoffTimeslotC),
+    pickup_timeslot_cents: String(pickupTimeslotC),
+    extended_cents: String(extendedC),
+    min_order_cents: String(minC),
+    tax_cents: String(taxC),
+
+    // schedule
+    dropoff_date: schedule.dropoff_date || '',
+    dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
+    dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
+    pickup_date: schedule.pickup_date || '',
+    pickup_timeslot_type: schedule.pickup_timeslot_type || '',
+    pickup_timeslot_value: schedule.pickup_timeslot_value || '',
+
+    // customer + location
+    name: customer.name || '',
+    phone: customer.phone || '',
+    email: customer.email || '',
+    street: location.street || '',
+    address2: location.address2 || '',
+    city: location.city || '',
+    state: location.state || '',
+    zip: location.zip || '',
+    location_notes: String(location.notes || '').slice(0, 350),
+
+    // items (trim hard)
+    items: JSON.stringify(validItems).slice(0, 350),
+  },
+
+  // This is what the customer sees on the Stripe page
+  custom_text: {
+    submit: {
+      message:
+        "This saves your card to reserve your request. We’ll review availability within ~2 hours. If approved, we will charge a 30% deposit and email an invoice for the remaining balance.",
+    },
+  },
+});
 
     return {
       statusCode: 200,
