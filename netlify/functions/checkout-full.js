@@ -272,6 +272,7 @@ exports.handler = async (event) => {
     // --- Create Stripe Checkout session in SETUP mode (save card only; no line_items) ---
     const session = await stripe.checkout.sessions.create({
       mode: 'setup',
+      currency: 'usd', // ✅ REQUIRED for Checkout in setup mode (esp. with dynamic payment methods)
       success_url: success_url || 'https://example.com/thank-you-full-service',
       cancel_url: cancel_url || 'https://example.com',
       customer_email: customer.email || undefined,
