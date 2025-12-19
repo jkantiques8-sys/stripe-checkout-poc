@@ -30,19 +30,24 @@ exports.handler = async (event) => {
       if (!page.data || page.data.length === 0) break;
 
       for (const inv of page.data) {
+        if (inv.status !== 'draft') continue; // defensive
         checked += 1;
+
         const md = inv.metadata || {};
         if (md.kraus_flow !== 'full_service') continue;
 
         const sendTs = Number(md.kraus_send_ts || 0);
         if (!Number.isFinite(sendTs) || sendTs <= 0) continue;
 
-        if (sendTs <= now) {
-          // finalize + send
-          const finalized = await stripe.invoices.finalizeInvoice(inv.id);
-          await stripe.invoices.sendInvoice(finalized.id);
-          sentCount += 1;
+        if (sendTs > now) {
+          console.log(`Skipping ${inv.id} — scheduled for ${sendTs} (now=${now})`);
+          continue;
         }
+
+        // finalize + send
+        const finalized = await stripe.invoices.finalizeInvoice(inv.id);
+        await stripe.invoices.sendInvoice(finalized.id);
+        sentCount += 1;
       }
 
       if (!page.has_more) break;
