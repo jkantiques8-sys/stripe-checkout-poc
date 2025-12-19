@@ -1,209 +1,281 @@
 // netlify/functions/checkout-approve.js
+// Approve a request:
+// - Full-service: charge 30% deposit immediately (off-session), create draft invoice for remaining balance,
+//               send now if drop-off <= 7 days else scheduled via send-balance-invoices
+// - Self-serve: charge 100% immediately (off-session), no invoice
+//
+// Requires env vars:
+// STRIPE_SECRET_KEY
+// (optional) TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
+// (optional) RESEND_API_KEY, EMAIL_FROM, EMAIL_OWNER
+//
+// This function expects a request body that includes at minimum:
+// { checkout_session_id: "cs_..." }
+//
+// It retrieves metadata from the Checkout Session (setup mode) to compute totals.
+
 const Stripe = require('stripe');
-const jwt = require('jsonwebtoken');
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2025-09-30.clover'
+});
 
-let twilioClient = null;
-let resendClient = null;
+function json(statusCode, body, extraHeaders = {}) {
+  return {
+    statusCode,
+    headers: {
+      'Content-Type': 'application/json',
+      ...extraHeaders
+    },
+    body: JSON.stringify(body)
+  };
+}
+
+function getCorsHeaders(origin) {
+  // Keep permissive for now since you're calling from Squarespace/static
+  return {
+    'Access-Control-Allow-Origin': origin || '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS'
+  };
+}
+
+function cents(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round(x);
+}
+
+function formatUSD(centsVal) {
+  const v = (Number(centsVal || 0) / 100).toFixed(2);
+  return `$${v}`;
+}
 
 function getTwilioClient() {
-  if (!twilioClient && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+  try {
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    if (!sid || !token) return null;
+    // eslint-disable-next-line global-require
     const twilio = require('twilio');
-    twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    return twilio(sid, token);
+  } catch (e) {
+    return null;
   }
-  return twilioClient;
-}
-
-function getResendClient() {
-  if (!resendClient && process.env.RESEND_API_KEY) {
-    const { Resend } = require('resend');
-    resendClient = new Resend(process.env.RESEND_API_KEY);
-  }
-  return resendClient;
-}
-
-const cors = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
-};
-
-function centsToDollars(cents) {
-  const n = Number(cents || 0);
-  return (n / 100).toFixed(2);
-}
-
-function parseYYYYMMDD(s) {
-  if (!s || typeof s !== 'string') return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
-  if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  if (Number.isNaN(d.getTime())) return null;
-  return d;
-}
-
-function daysBetween(a, b) {
-  // whole days (b - a)
-  const ms = 24 * 60 * 60 * 1000;
-  return Math.floor((b.getTime() - a.getTime()) / ms);
 }
 
 async function sendEmailApproved({ to, customerName, depositCents, balanceCents, dropoffDate, invoiceHostedUrl }) {
-  const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL) return;
+  // Uses Resend if configured; otherwise no-op
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.EMAIL_FROM || 'orders@kraustables.com';
+  const owner = process.env.EMAIL_OWNER || from;
 
-  const depositStr = `$${centsToDollars(depositCents)}`;
-  const balanceStr = `$${centsToDollars(balanceCents)}`;
-  const invoiceLine = invoiceHostedUrl
-    ? `<p><a href="${invoiceHostedUrl}">Pay your remaining balance here</a>.</p>`
-    : `<p>Your remaining balance will be invoiced by email.</p>`;
+  if (!apiKey) return;
+
+  // eslint-disable-next-line global-require
+  const { Resend } = require('resend');
+  const resend = new Resend(apiKey);
+
+  const subject = `Your Kraus' Tables & Chairs request is approved`;
+  const lines = [];
+
+  lines.push(`Hi ${customerName || 'there'},`);
+  lines.push('');
+  lines.push('Your request has been approved.');
+  lines.push('');
+  lines.push(`Deposit charged: ${formatUSD(depositCents)}`);
+  lines.push('');
+  lines.push(`Remaining balance: ${formatUSD(balanceCents)}${dropoffDate ? ` (for drop-off ${dropoffDate})` : ''}`);
+  lines.push('');
+
+  if (balanceCents > 0) {
+    if (invoiceHostedUrl) {
+      lines.push(`Pay your remaining balance here:`);
+      lines.push(invoiceHostedUrl);
+    } else {
+      lines.push(`Your remaining balance will be invoiced by email.`);
+    }
+  } else {
+    lines.push('No remaining balance is due.');
+  }
+
+  lines.push('');
+  lines.push('If you have any questions, just reply to this email.');
+  lines.push('');
+  lines.push('– Kraus’ Tables & Chairs');
 
   await resend.emails.send({
-    from: process.env.FROM_EMAIL,
-    to,
-    subject: "Your Kraus' Tables & Chairs request is approved",
-    html: `
-      <p>Hi ${customerName || ''},</p>
-      <p>Your request has been approved.</p>
-      <p><strong>Deposit charged:</strong> ${depositStr}</p>
-      ${balanceCents > 0 ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDate ? ` (for drop-off ${dropoffDate})` : ''}</p>` : ''}
-      ${balanceCents > 0 ? invoiceLine : '<p>No remaining balance is due.</p>'}
-      <p>If you have any questions, just reply to this email.</p>
-    `
+    from,
+    to: [to, owner],
+    subject,
+    text: lines.join('\n')
   });
 }
 
 async function sendEmailDepositPaymentLink({ to, customerName, depositCents, paymentUrl }) {
-  const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL) return;
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.EMAIL_FROM || 'orders@kraustables.com';
+  const owner = process.env.EMAIL_OWNER || from;
 
-  const depositStr = `$${centsToDollars(depositCents)}`;
+  if (!apiKey) return;
+
+  // eslint-disable-next-line global-require
+  const { Resend } = require('resend');
+  const resend = new Resend(apiKey);
+
+  const subject = `Action needed: confirm your deposit payment`;
+  const lines = [];
+
+  lines.push(`Hi ${customerName || 'there'},`);
+  lines.push('');
+  lines.push('Your request has been approved, but your deposit could not be charged automatically.');
+  lines.push('');
+  lines.push(`Deposit due: ${formatUSD(depositCents)}`);
+  lines.push('');
+  lines.push('Please complete your deposit payment here:');
+  lines.push(paymentUrl);
+  lines.push('');
+  lines.push('If you have any questions, just reply to this email.');
+  lines.push('');
+  lines.push('– Kraus’ Tables & Chairs');
 
   await resend.emails.send({
-    from: process.env.FROM_EMAIL,
-    to,
-    subject: "Action needed: confirm your deposit",
-    html: `
-      <p>Hi ${customerName || ''},</p>
-      <p>Your request has been approved, but we couldn’t charge your deposit automatically.</p>
-      <p><strong>Deposit due:</strong> ${depositStr}</p>
-      <p><a href="${paymentUrl}">Pay the deposit here</a>.</p>
-      <p>If you need help, reply to this email.</p>
-    `
+    from,
+    to: [to, owner],
+    subject,
+    text: lines.join('\n')
   });
 }
 
 exports.handler = async (event) => {
+  const cors = getCorsHeaders(event.headers?.origin);
+
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: cors };
+    return { statusCode: 204, headers: cors, body: '' };
+  }
+
+  if (event.httpMethod !== 'POST') {
+    return json(405, { error: 'Method not allowed' }, cors);
   }
 
   try {
-    const qsToken = event.queryStringParameters && event.queryStringParameters.token;
-    let bodyToken = null;
-    if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
-    const token = qsToken || bodyToken;
+    const body = JSON.parse(event.body || '{}');
+    const sessionId = body.checkout_session_id;
 
-    if (!token) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Token is required' }) };
+    if (!sessionId) {
+      return json(400, { error: 'Missing checkout_session_id' }, cors);
     }
 
-    const JWT_SECRET = process.env.JWT_SECRET;
-    if (!JWT_SECRET) {
-      return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Missing JWT_SECRET' }) };
-    }
+    // Retrieve Checkout Session (setup mode)
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['customer', 'setup_intent']
+    });
 
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (e) {
-      return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
-    }
-
-    const setupIntentId = decoded.setupIntentId;
-    const sessionId = decoded.sessionId;
-    const customerName = decoded.customerName || '';
-    const customerEmail = decoded.customerEmail || '';
-    const customerPhone = decoded.customerPhone || '';
-    const flow = decoded.orderDetails?.flow || 'full_service';
-
-    if (!setupIntentId || !sessionId) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId or sessionId in token' }) };
-    }
-
-    // Retrieve session metadata (pricing + schedule)
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
     const md = session.metadata || {};
+    const flow = md.flow || 'full_service';
 
-    const totalCents = Number(md.total_cents || decoded.orderDetails?.total_cents || 0);
-    if (!Number.isFinite(totalCents) || totalCents <= 0) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing or invalid total_cents' }) };
+    const customerId = session.customer?.id || session.customer;
+    const customerEmail = md.email || session.customer_details?.email || session.customer?.email;
+    const customerName = md.name || session.customer_details?.name || session.customer?.name;
+    const customerPhone = md.phone || session.customer_details?.phone;
+
+    if (!customerId) {
+      return json(400, { error: 'No customer found on session' }, cors);
+    }
+    if (!customerEmail) {
+      return json(400, { error: 'No customer email found (metadata.email or customer_details.email)' }, cors);
     }
 
-    const dropoffDateStr = md.dropoff_date || decoded.orderDetails?.dropoff_date || '';
-    const dropoffDate = parseYYYYMMDD(dropoffDateStr);
-    const today = new Date();
-    const daysUntilDropoff = dropoffDate ? daysBetween(today, dropoffDate) : 999;
-
-    // Retrieve setup intent to find saved payment method + customer
-    const si = await stripe.setupIntents.retrieve(setupIntentId);
-    const customerId = si.customer || decoded.customerId || session.customer;
-    const paymentMethodId = si.payment_method;
-
-    if (!customerId || !paymentMethodId) {
-      return {
-        statusCode: 409,
-        headers: cors,
-        body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' })
-      };
+    const setupIntentId = session.setup_intent?.id || session.setup_intent;
+    if (!setupIntentId) {
+      return json(400, { error: 'No setup_intent found on checkout session' }, cors);
     }
 
-    // Determine charge now: full-service = 30% deposit; self-serve = 100%
-    const depositPercent = flow === 'self_service' ? 1.0 : 0.30;
-    const depositCents = Math.max(0, Math.round(totalCents * depositPercent));
+    // Get the PaymentMethod saved
+    const setupIntent = await stripe.setupIntents.retrieve(setupIntentId, {
+      expand: ['payment_method']
+    });
+    const paymentMethodId = setupIntent.payment_method?.id || setupIntent.payment_method;
+
+    if (!paymentMethodId) {
+      return json(400, { error: 'No payment_method attached to setup_intent' }, cors);
+    }
+
+    // Totals come from metadata (locked architecture: Stripe APIs only, no DB)
+    const totalCents = cents(md.total_cents);
+    const dropoffDateStr = md.dropoff_date || '';
+    const dropoffDate = dropoffDateStr ? new Date(dropoffDateStr) : null;
+
+    if (!totalCents || totalCents <= 0) {
+      return json(400, { error: 'Invalid total_cents in metadata' }, cors);
+    }
+
+    const now = new Date();
+    const daysUntilDropoff = dropoffDate ? Math.ceil((dropoffDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)) : 999;
+
+    // Amount to charge now
+    const chargeCents = flow === 'self_service' ? totalCents : Math.round(totalCents * 0.30);
+    const depositCents = flow === 'self_service' ? totalCents : chargeCents;
     const balanceCents = Math.max(0, totalCents - depositCents);
 
-    // Charge deposit/full amount off-session
+    // Ensure the PaymentMethod is attached/defaulted
+    await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId }).catch(() => {});
+    await stripe.customers.update(customerId, {
+      invoice_settings: { default_payment_method: paymentMethodId }
+    });
+
+    // Charge now (off-session)
     let pi;
     try {
       pi = await stripe.paymentIntents.create({
-        amount: depositCents,
+        amount: chargeCents,
         currency: 'usd',
         customer: customerId,
         payment_method: paymentMethodId,
         off_session: true,
         confirm: true,
-        description: flow === 'self_service'
-          ? "Self-service rental payment"
-          : "30% deposit for rental request",
+        description:
+          flow === 'self_service'
+            ? 'Full payment for approved self-serve rental request'
+            : '30% deposit for approved rental request',
         metadata: {
           flow,
           checkout_session_id: sessionId,
           setup_intent_id: setupIntentId,
+          total_cents: String(totalCents),
+          deposit_cents: String(depositCents),
+          balance_cents: String(balanceCents),
           dropoff_date: dropoffDateStr || ''
         }
       });
     } catch (err) {
-      // Fallback: send a payment link (Checkout Session)
+      // If off-session charge fails, email a payment link for the deposit
       const paySession = await stripe.checkout.sessions.create({
         mode: 'payment',
-        payment_method_types: ['card'],
+        success_url: md.success_url || `${md.origin || 'https://kraustables.com'}/thank-you`,
+        cancel_url: md.cancel_url || `${md.origin || 'https://kraustables.com'}/full-service`,
         customer: customerId,
-        success_url: `${process.env.SITE_URL || ''}/?deposit=paid`,
-        cancel_url: `${process.env.SITE_URL || ''}/?deposit=cancelled`,
-        line_items: [{
-          price_data: {
-            currency: 'usd',
-            product_data: { name: flow === 'self_service' ? 'Self-service rental payment' : 'Deposit (30%)' },
-            unit_amount: depositCents
-          },
-          quantity: 1
-        }],
+        customer_email: customerEmail,
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: flow === 'self_service' ? 'Payment due (self-serve)' : 'Deposit due (30%)'
+              },
+              unit_amount: chargeCents
+            },
+            quantity: 1
+          }
+        ],
+        payment_method_types: ['card'],
         metadata: {
           flow,
           checkout_session_id: sessionId,
           setup_intent_id: setupIntentId,
+          total_cents: String(totalCents),
+          deposit_cents: String(depositCents),
+          balance_cents: String(balanceCents),
           dropoff_date: dropoffDateStr || ''
         }
       });
@@ -231,13 +303,16 @@ exports.handler = async (event) => {
     let invoiceId = null;
 
     if (flow !== 'self_service' && balanceCents > 0) {
-      // Build invoice items for FULL total, then subtract deposit as a negative line item.
-      const invoiceItems = [];
+      // We want an invoice for the REMAINING balance.
+      // If we have a breakdown for the *full* total, we can show it and include a "Deposit paid" credit.
+      // If we *don't* have that breakdown (common when metadata isn't wired yet), we MUST NOT create
+      // a credit-only invoice (Stripe will treat it as $0 and mark it paid).
 
-      const addLine = (label, cents) => {
-        const n = Number(cents || 0);
-        if (!Number.isFinite(n) || n === 0) return;
-        invoiceItems.push({ label, cents: n });
+      const breakdownItems = [];
+      const addLine = (label, centsVal) => {
+        const n = Number(centsVal || 0);
+        if (!Number.isFinite(n) || n <= 0) return;
+        breakdownItems.push({ label, cents: n });
       };
 
       addLine('Rental items', md.products_subtotal_cents);
@@ -250,54 +325,72 @@ exports.handler = async (event) => {
       addLine('Minimum order surcharge', md.min_order_cents);
       addLine('Sales tax', md.tax_cents);
 
-      // Create invoice items
-      for (const it of invoiceItems) {
-        await stripe.invoiceItems.create({
-          customer: customerId,
-          currency: 'usd',
-          amount: it.cents,
-          description: it.label
-        });
-      }
-
-      // Negative line item for deposit already paid
-      await stripe.invoiceItems.create({
-        customer: customerId,
-        currency: 'usd',
-        amount: -depositCents,
-        description: 'Deposit paid'
-      });
+      const breakdownSum = breakdownItems.reduce((sum, it) => sum + it.cents, 0);
+      const breakdownLooksComplete = breakdownSum > 0 && Math.abs(breakdownSum - totalCents) <= 2; // allow 1–2¢ rounding
 
       const shouldSendNow = daysUntilDropoff <= 7;
+      const sendTs = (() => {
+        if (shouldSendNow) return Math.floor(Date.now() / 1000);
+        if (!dropoffDate) return 0;
+        const sendDate = new Date(dropoffDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+        // send at 9am local-ish (server time)
+        sendDate.setHours(9, 0, 0, 0);
+        return Math.floor(sendDate.getTime() / 1000);
+      })();
 
+      // Always keep invoice in draft until we explicitly send it.
       const invoice = await stripe.invoices.create({
         customer: customerId,
-        payment_settings: { payment_method_types: ['card'] },
         collection_method: 'send_invoice',
         days_until_due: shouldSendNow ? 1 : 2,
-        auto_advance: shouldSendNow, // finalize automatically if sending now
+        auto_advance: false,
         metadata: {
-          kraus_flow: 'full_service',
+          kraus_flow: flow,
           checkout_session_id: sessionId,
           setup_intent_id: setupIntentId,
           deposit_payment_intent_id: pi.id,
           dropoff_date: dropoffDateStr || '',
-          kraus_send_ts: (() => {
-            if (shouldSendNow) return String(Math.floor(Date.now() / 1000));
-            if (!dropoffDate) return '';
-            const sendDate = new Date(dropoffDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-            // send at 9am local-ish (server time)
-            sendDate.setHours(9, 0, 0, 0);
-            return String(Math.floor(sendDate.getTime() / 1000));
-          })()
+          total_cents: String(totalCents),
+          deposit_cents: String(depositCents),
+          balance_cents: String(balanceCents),
+          kraus_send_ts: sendTs ? String(sendTs) : ''
         }
       });
 
       invoiceId = invoice.id;
 
+      if (breakdownLooksComplete) {
+        // Attach the FULL breakdown to the invoice, then subtract deposit as a credit.
+        for (const it of breakdownItems) {
+          await stripe.invoiceItems.create({
+            customer: customerId,
+            invoice: invoice.id,
+            currency: 'usd',
+            amount: it.cents,
+            description: it.label
+          });
+        }
+
+        await stripe.invoiceItems.create({
+          customer: customerId,
+          invoice: invoice.id,
+          currency: 'usd',
+          amount: -depositCents,
+          description: 'Deposit paid'
+        });
+      } else {
+        // No reliable breakdown: create a single line item for the remaining balance ONLY.
+        await stripe.invoiceItems.create({
+          customer: customerId,
+          invoice: invoice.id,
+          currency: 'usd',
+          amount: balanceCents,
+          description: 'Remaining balance (after deposit)'
+        });
+      }
+
       if (shouldSendNow) {
-        // Ensure finalized and sent
-        const finalized = invoice.status === 'draft' ? await stripe.invoices.finalizeInvoice(invoice.id) : invoice;
+        const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
         const sent = await stripe.invoices.sendInvoice(finalized.id);
         invoiceHostedUrl = sent.hosted_invoice_url || null;
       }
@@ -308,7 +401,9 @@ exports.handler = async (event) => {
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
         await twilio.messages.create({
-          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged.`,
+          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${
+            flow === 'self_service' ? 'Payment' : 'Deposit'
+          } has been charged.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
@@ -331,18 +426,16 @@ exports.handler = async (event) => {
       headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
         success: true,
-        message: flow === 'self_service' ? 'Payment charged' : 'Deposit charged',
-        payment_intent_id: pi.id,
+        flow,
+        deposit_cents: depositCents,
+        balance_cents: balanceCents,
         invoice_id: invoiceId,
-        invoice_hosted_url: invoiceHostedUrl
+        invoice_hosted_url: invoiceHostedUrl,
+        payment_intent_id: pi.id
       })
     };
-  } catch (error) {
-    console.error('Approve error:', error);
-    return {
-      statusCode: 500,
-      headers: cors,
-      body: JSON.stringify({ error: 'Failed to approve', details: error.message })
-    };
+  } catch (err) {
+    console.error('checkout-approve error:', err);
+    return json(500, { error: err.message || 'Server error' }, getCorsHeaders(event.headers?.origin));
   }
 };
