@@ -1,4 +1,4 @@
-// netlify/functions/create-checkout-full.js
+// netlify/functions/checkout-full.js
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // ---- Business settings (prices in cents) ----
@@ -29,83 +29,53 @@ const TAX_RATE = 0.08875;      // 8.875%
 // Manhattan congestion surcharge
 const CONGESTION_FEE_CENTS = 7500; // $75
 const MANHATTAN_ZIPS = [
-  // Lower Manhattan / Midtown / UWS / UES / Harlem / Washington Heights / Inwood
   "10001","10002","10003","10004","10005","10006","10007","10009","10010","10011","10012","10013","10014",
   "10016","10017","10018","10019","10020","10021","10022","10023","10024","10025","10026","10027","10028","10029",
   "10030","10031","10032","10033","10034","10035","10036","10037","10038","10039","10040",
-  // Roosevelt Island
   "10044",
-  // Common UES variants
   "10065","10075","10128",
-  // Battery Park City / FiDi area
   "10280","10281","10282"
 ];
 
 function normalizeZip(zip) {
-  // Supports "10001" and "10001-1234"
   return String(zip || '').trim().slice(0, 5);
 }
-
 function isManhattanZip(zip) {
   const z = normalizeZip(zip);
   return z.length === 5 && MANHATTAN_ZIPS.includes(z);
 }
 
-// Time slot fees - base fee for 1-hour prompt time slot
+// Time slot fees
 const TIMESLOT_BASE_FEE = {
   prompt: 10000,  // $100 for 1-hour prompt time slot
-  flex: 0         // $0 for flexible time slot
+  flex: 0
 };
-
-// Time slot fees for 1-hour prompt time slots (in cents)
 const PROMPT_FEE = {
-  6: 7500,   // 6-7am: $75
-  7: 5000,   // 7-8am: $50
-  8: 2500,   // 8-9am: $25
+  6: 7500, 7: 5000, 8: 2500,
   9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0,
-  21: 2500,  // 9-10pm: $25
-  22: 5000,  // 10-11pm: $50
-  23: 5000,  // 11pm-12am: $50
-  0: 7500    // 12-1am: $75
+  21: 2500, 22: 5000, 23: 5000, 0: 7500
 };
-
-// Time slot fees for 4-hour flex time slots (in cents)
 const FLEX_FEE = {
-  '8-12': 0,     // Morning: $0
-  '12-4': 5000,  // Afternoon: $50
-  '4-8': 0       // Evening: $0
+  '8-12': 0,
+  '12-4': 5000,
+  '4-8': 0
 };
 
-// Helper function to format time slot value to 12-hour AM/PM format
 const formatTimeSlot = (value) => {
   if (!value) return value;
-
-  // Special handling for known flex slot patterns
-  const flexMap = {
-    '8-12': '8AM–12PM',
-    '12-4': '12PM–4PM',
-    '4-8': '4PM–8PM'
-  };
-
-  if (flexMap[value]) {
-    return flexMap[value];
-  }
-
-  // Otherwise, format as 24-hour time slot (for prompt slots)
+  const flexMap = { '8-12': '8AM–12PM', '12-4': '12PM–4PM', '4-8': '4PM–8PM' };
+  if (flexMap[value]) return flexMap[value];
   const match = /^(\d{1,2})-(\d{1,2})$/.exec(String(value).trim());
   if (!match) return value;
-
   const [, startStr, endStr] = match;
   const start = Number(startStr);
   const end = Number(endStr);
-
   const formatHour = (h) => {
     const normalized = ((h % 24) + 24) % 24;
     const suffix = normalized >= 12 ? 'PM' : 'AM';
     const hour12 = normalized % 12 === 0 ? 12 : normalized % 12;
     return `${hour12}${suffix}`;
   };
-
   return `${formatHour(start)}–${formatHour(end)}`;
 };
 
@@ -115,15 +85,7 @@ const cors = {
 };
 
 function sanitizeUtm(utm) {
-  const allowed = [
-    'utm_source',
-    'utm_medium',
-    'utm_campaign',
-    'utm_term',
-    'utm_content',
-    'gclid',
-    'fbclid'
-  ];
+  const allowed = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','fbclid'];
   const out = {};
   if (!utm || typeof utm !== 'object') return out;
   for (const key of allowed) {
@@ -132,8 +94,6 @@ function sanitizeUtm(utm) {
   }
   return out;
 }
-
-
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -150,13 +110,11 @@ exports.handler = async (event) => {
       customer = {},
       location = {},
       schedule = {},
-      isRush = false, // (kept) rush flag from frontend if you decide to send it
       utm = {},
       success_url,
       cancel_url
     } = JSON.parse(event.body || '{}');
 
-    // Validate flow
     if (flow !== 'full_service') {
       throw new Error('Invalid flow: expected full_service');
     }
@@ -168,7 +126,6 @@ exports.handler = async (event) => {
     for (const item of items) {
       const sku = item.sku;
       const qty = Math.max(0, Number(item.qty) || 0);
-
       if (qty > 0 && PRICE_MAP[sku]) {
         const priceInfo = PRICE_MAP[sku];
         productsSubtotalC += priceInfo.unit * qty;
@@ -180,16 +137,17 @@ exports.handler = async (event) => {
       throw new Error('Please select at least 1 item.');
     }
 
-    // --- Calculate delivery fee (30% of items) ---
+    // --- Delivery fee (30% of items) ---
     const deliveryC = Math.round(productsSubtotalC * DELIVERY_RATE);
 
-    // --- Manhattan congestion surcharge (flat $75 for Manhattan ZIPs) ---
+    // --- Manhattan congestion surcharge ---
     const zip5 = normalizeZip(location.zip);
     const congestionC = isManhattanZip(zip5) ? CONGESTION_FEE_CENTS : 0;
 
     // --- Rush fee (if drop-off is within 2 days) ---
     const toDate = (s) => s ? new Date(`${s}T00:00:00`) : null;
     const dropoffDate = toDate(schedule.dropoff_date);
+
     const todayDate = new Date();
     todayDate.setHours(0, 0, 0, 0);
 
@@ -200,21 +158,18 @@ exports.handler = async (event) => {
 
     const daysUntilDropoff = daysBetween(todayDate, dropoffDate);
     const rushC = (dropoffDate && daysUntilDropoff <= 2)
-      ? Math.max(10000, Math.round(productsSubtotalC * 0.10))  // max of $100 or 10% of items
+      ? Math.max(10000, Math.round(productsSubtotalC * 0.10))
       : 0;
 
     // --- Time slot fees ---
     const parseHourStart = (range) => {
-      // "6-7" -> 6, "21-22" -> 21, "0-1" -> 0
       const h = parseInt(String(range).split('-')[0], 10);
       return Number.isFinite(h) ? h : null;
     };
 
-    // Dropoff time slot fee
     const dropoffType = schedule.dropoff_timeslot_type || 'flex';
     const dropoffValue = schedule.dropoff_timeslot_value || '';
     let dropoffTimeslotC = TIMESLOT_BASE_FEE[dropoffType] || 0;
-
     if (dropoffType === 'prompt') {
       const h = parseHourStart(dropoffValue);
       dropoffTimeslotC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
@@ -222,23 +177,19 @@ exports.handler = async (event) => {
       dropoffTimeslotC += FLEX_FEE[dropoffValue] || 0;
     }
 
-    // Pickup time slot fee (no base fee for prompt if same day)
     const pickupDate = toDate(schedule.pickup_date);
-    const sameDay = dropoffDate && pickupDate &&
-                    (schedule.dropoff_date === schedule.pickup_date);
+    const sameDay = dropoffDate && pickupDate && (schedule.dropoff_date === schedule.pickup_date);
 
     const pickupType = schedule.pickup_timeslot_type || 'flex';
     const pickupValue = schedule.pickup_timeslot_value || '';
     let pickupTimeslotC = 0;
 
-    // Only add base fee if NOT (prompt AND same day)
     if (pickupType === 'prompt' && !sameDay) {
       pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     } else if (pickupType === 'flex') {
       pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     }
 
-    // Always add time slot fee
     if (pickupType === 'prompt') {
       const h = parseHourStart(pickupValue);
       pickupTimeslotC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
@@ -246,167 +197,40 @@ exports.handler = async (event) => {
       pickupTimeslotC += FLEX_FEE[pickupValue] || 0;
     }
 
-    // --- Extended rental fee (15% per extra day after first day) ---
+    // --- Extended rental fee ---
     const rentalDays = daysBetween(dropoffDate, pickupDate);
     const extraDays = Math.max(0, rentalDays - 1);
     const extendedC = Math.round(productsSubtotalC * EXTENDED_RATE * extraDays);
 
     // --- Minimum order surcharge ---
-    // Minimum includes: items + delivery + congestion + rush + time slot fees + extended
     const towardMinC =
-      productsSubtotalC +
-      deliveryC +
-      congestionC +
-      rushC +
-      dropoffTimeslotC +
-      pickupTimeslotC +
-      extendedC;
-
+      productsSubtotalC + deliveryC + congestionC + rushC + dropoffTimeslotC + pickupTimeslotC + extendedC;
     const minC = Math.max(0, MIN_ORDER - towardMinC);
 
     // --- Tax calculation ---
     const taxableC = towardMinC + minC;
     const taxC = Math.round(taxableC * TAX_RATE);
 
-    // --- Build line items for Stripe ---
-    const line_items = [];
+    // --- Total (full total) ---
+    const totalC = taxableC + taxC;
 
-    // Add each product
-    for (const item of validItems) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: item.name },
-          unit_amount: item.unit,
-        },
-        quantity: item.qty,
-      });
-    }
-
-    // Add delivery fee
-    if (deliveryC > 0) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Delivery fee (30%)' },
-          unit_amount: deliveryC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add Manhattan congestion surcharge
-    if (congestionC > 0) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Manhattan congestion surcharge' },
-          unit_amount: congestionC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add rush fee
-    if (rushC > 0) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Rush fee (≤2 days)' },
-          unit_amount: rushC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add dropoff time slot fee
-    if (dropoffTimeslotC > 0) {
-      const dropoffLabel = dropoffType === 'prompt'
-        ? `Drop-off: 1-hour time slot (${formatTimeSlot(dropoffValue)})`
-        : `Drop-off: 4-hour time slot (${formatTimeSlot(dropoffValue)})`;
-
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: dropoffLabel },
-          unit_amount: dropoffTimeslotC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add pickup time slot fee
-    if (pickupTimeslotC > 0) {
-      const pickupLabel = pickupType === 'prompt'
-        ? `Pickup: 1-hour time slot (${formatTimeSlot(pickupValue)})`
-        : `Pickup: 4-hour time slot (${formatTimeSlot(pickupValue)})`;
-
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: pickupLabel },
-          unit_amount: pickupTimeslotC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add extended rental fee
-    if (extendedC > 0) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: `Extended rental (${extraDays} day${extraDays !== 1 ? 's' : ''})` },
-          unit_amount: extendedC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add minimum order surcharge if needed
-    if (minC > 0) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Minimum order surcharge (to $300)' },
-          unit_amount: minC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // Add tax
-    if (taxC > 0) {
-      line_items.push({
-        price_data: {
-          currency: 'usd',
-          product_data: { name: `Sales tax (${(TAX_RATE * 100).toFixed(3)}%)` },
-          unit_amount: taxC,
-        },
-        quantity: 1,
-      });
-    }
-
-    // --- Create order summary for notifications ---
-    const orderSummary = validItems
-      .map(item => `${item.qty}x ${item.name}`)
-      .join(', ')
-      .substring(0, 500);
-
-    // --- Create Stripe checkout session with MANUAL CAPTURE ---
+    // --- Create a Setup-mode Checkout Session (save card only) ---
     const session = await stripe.checkout.sessions.create({
+      mode: 'setup',
+      success_url: success_url || 'https://example.com/thank-you-full-service',
+      cancel_url: cancel_url || 'https://example.com',
+      customer_email: customer.email || undefined,
+
       custom_text: {
         submit: {
           message:
             "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
         }
       },
-      mode: 'setup',
-      success_url: success_url || 'https://example.com/thank-you-full-service',
-      cancel_url: cancel_url || 'https://example.com',
-      customer_email: customer.email || undefined,
+
       metadata: {
         flow: 'full_service',
+
         // pricing (cents)
         products_subtotal_cents: String(productsSubtotalC),
         delivery_cents: String(deliveryC),
@@ -417,7 +241,7 @@ exports.handler = async (event) => {
         extended_cents: String(extendedC),
         min_order_cents: String(minC),
         tax_cents: String(taxC),
-        total_cents: String(taxableC + taxC),
+        total_cents: String(totalC),
 
         // schedule
         dropoff_date: schedule.dropoff_date || '',
@@ -427,15 +251,15 @@ exports.handler = async (event) => {
         pickup_timeslot_type: schedule.pickup_timeslot_type || '',
         pickup_timeslot_value: schedule.pickup_timeslot_value || '',
 
-        // customer + location
-        name: (customer.name || '').slice(0, 350),
-        phone: (customer.phone || '').slice(0, 350),
-        email: (customer.email || '').slice(0, 350),
-        street: (location.street || '').slice(0, 350),
-        address2: (location.address2 || '').slice(0, 350),
-        city: (location.city || '').slice(0, 350),
-        state: (location.state || '').slice(0, 350),
-        zip: (location.zip || '').slice(0, 350),
+        // customer + location (trimmed)
+        name: String(customer.name || '').slice(0, 350),
+        phone: String(customer.phone || '').slice(0, 350),
+        email: String(customer.email || '').slice(0, 350),
+        street: String(location.street || '').slice(0, 350),
+        address2: String(location.address2 || '').slice(0, 350),
+        city: String(location.city || '').slice(0, 350),
+        state: String(location.state || '').slice(0, 350),
+        zip: String(location.zip || '').slice(0, 350),
         location_notes: String(location.notes || '').slice(0, 350),
 
         // items (trim hard)
