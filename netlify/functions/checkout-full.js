@@ -29,15 +29,11 @@ const TAX_RATE = 0.08875;      // 8.875%
 // Manhattan congestion surcharge
 const CONGESTION_FEE_CENTS = 7500; // $75
 const MANHATTAN_ZIPS = [
-  // Lower Manhattan / Midtown / UWS / UES / Harlem / Washington Heights / Inwood
   "10001","10002","10003","10004","10005","10006","10007","10009","10010","10011","10012","10013","10014",
   "10016","10017","10018","10019","10020","10021","10022","10023","10024","10025","10026","10027","10028","10029",
   "10030","10031","10032","10033","10034","10035","10036","10037","10038","10039","10040",
-  // Roosevelt Island
   "10044",
-  // Common UES variants
   "10065","10075","10128",
-  // Battery Park City / FiDi area
   "10280","10281","10282"
 ];
 
@@ -80,18 +76,14 @@ const FLEX_FEE = {
 const formatTimeSlot = (value) => {
   if (!value) return value;
 
-  // Special handling for known flex slot patterns
   const flexMap = {
     '8-12': '8AM–12PM',
     '12-4': '12PM–4PM',
     '4-8': '4PM–8PM'
   };
 
-  if (flexMap[value]) {
-    return flexMap[value];
-  }
+  if (flexMap[value]) return flexMap[value];
 
-  // Otherwise, format as 24-hour time slot (for prompt slots)
   const match = /^(\d{1,2})-(\d{1,2})$/.exec(String(value).trim());
   if (!match) return value;
 
@@ -198,12 +190,11 @@ exports.handler = async (event) => {
 
     const daysUntilDropoff = daysBetween(todayDate, dropoffDate);
     const rushC = (dropoffDate && daysUntilDropoff <= 2)
-      ? Math.max(10000, Math.round(productsSubtotalC * 0.10))  // max of $100 or 10% of items
+      ? Math.max(10000, Math.round(productsSubtotalC * 0.10))
       : 0;
 
     // --- Time slot fees ---
     const parseHourStart = (range) => {
-      // "6-7" -> 6, "21-22" -> 21, "0-1" -> 0
       const h = parseInt(String(range).split('-')[0], 10);
       return Number.isFinite(h) ? h : null;
     };
@@ -229,14 +220,12 @@ exports.handler = async (event) => {
     const pickupValue = schedule.pickup_timeslot_value || '';
     let pickupTimeslotC = 0;
 
-    // Only add base fee if NOT (prompt AND same day)
     if (pickupType === 'prompt' && !sameDay) {
       pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     } else if (pickupType === 'flex') {
       pickupTimeslotC += TIMESLOT_BASE_FEE[pickupType] || 0;
     }
 
-    // Always add time slot fee
     if (pickupType === 'prompt') {
       const h = parseHourStart(pickupValue);
       pickupTimeslotC += (h !== null ? (PROMPT_FEE[h] || 0) : 0);
@@ -250,7 +239,6 @@ exports.handler = async (event) => {
     const extendedC = Math.round(productsSubtotalC * EXTENDED_RATE * extraDays);
 
     // --- Minimum order surcharge ---
-    // Minimum includes: items + delivery + congestion + rush + time slot fees + extended
     const towardMinC =
       productsSubtotalC +
       deliveryC +
@@ -269,19 +257,46 @@ exports.handler = async (event) => {
     // --- Total ---
     const totalC = taxableC + taxC;
 
+    // ✅ Ensure a Stripe Customer exists so SetupIntent.customer is populated reliably
+    const customerEmail = (customer.email || '').trim();
+    const customerName = (customer.name || '').trim();
+    const customerPhone = (customer.phone || '').trim();
+
+    if (!customerEmail) {
+      throw new Error('Customer email is required.');
+    }
+
+    const stripeCustomer = await stripe.customers.create({
+      email: customerEmail,
+      name: customerName || undefined,
+      phone: customerPhone || undefined,
+      metadata: {
+        flow: 'full_service',
+        dropoff_date: schedule.dropoff_date || '',
+        pickup_date: schedule.pickup_date || '',
+        zip: String(location.zip || '').slice(0, 50)
+      }
+    });
+
     // --- Create Stripe Checkout session in SETUP mode (save card only; no line_items) ---
     const session = await stripe.checkout.sessions.create({
       mode: 'setup',
-      currency: 'usd', // ✅ REQUIRED for Checkout in setup mode (esp. with dynamic payment methods)
+      currency: 'usd',                 // ✅ required for setup mode w/ dynamic PMs
+      payment_method_types: ['card'],  // ✅ keeps UI "Reserve with card" (no Klarna/Cash App/etc.)
+
       success_url: success_url || 'https://example.com/thank-you-full-service',
       cancel_url: cancel_url || 'https://example.com',
-      customer_email: customer.email || undefined,
+
+      // ✅ attach the Customer so SI has customer + approve/invoicing is stable
+      customer: stripeCustomer.id,
+
       custom_text: {
         submit: {
           message:
             "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
         }
       },
+
       metadata: {
         flow: 'full_service',
 
@@ -306,9 +321,9 @@ exports.handler = async (event) => {
         pickup_timeslot_value: schedule.pickup_timeslot_value || '',
 
         // customer + location (trimmed)
-        name: String(customer.name || '').slice(0, 350),
-        phone: String(customer.phone || '').slice(0, 350),
-        email: String(customer.email || '').slice(0, 350),
+        name: String(customerName || '').slice(0, 350),
+        phone: String(customerPhone || '').slice(0, 350),
+        email: String(customerEmail || '').slice(0, 350),
         street: String(location.street || '').slice(0, 350),
         address2: String(location.address2 || '').slice(0, 350),
         city: String(location.city || '').slice(0, 350),
