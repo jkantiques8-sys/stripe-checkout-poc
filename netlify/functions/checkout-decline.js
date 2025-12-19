@@ -1,11 +1,8 @@
 // netlify/functions/checkout-decline.js
-// Decline handler for the deposit-based flow.
-// - No payment has been captured at request time.
-// - On decline, we simply mark the Stripe customer as declined (for reporting)
-//   and (optionally) detach the saved payment method.
-
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const Stripe = require('stripe');
 const jwt = require('jsonwebtoken');
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
 
 let twilioClient = null;
 let resendClient = null;
@@ -29,8 +26,25 @@ function getResendClient() {
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
 };
+
+async function sendEmailDeclined({ to, customerName }) {
+  const resend = getResendClient();
+  if (!resend || !process.env.FROM_EMAIL) return;
+
+  await resend.emails.send({
+    from: process.env.FROM_EMAIL,
+    to,
+    subject: "Update on your Kraus' Tables & Chairs request",
+    html: `
+      <p>Hi ${customerName || ''},</p>
+      <p>Thanks for your request. Unfortunately we’re unable to fulfill it for the dates/details requested.</p>
+      <p><strong>No charges were made.</strong></p>
+      <p>If you’d like, reply with alternate dates and we’ll take another look.</p>
+    `
+  });
+}
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -40,93 +54,66 @@ exports.handler = async (event) => {
   try {
     const qsToken = event.queryStringParameters && event.queryStringParameters.token;
     let bodyToken = null;
-    if (event.body) {
-      try { bodyToken = JSON.parse(event.body).token; } catch {}
-    }
+    if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
     const token = qsToken || bodyToken;
 
     if (!token) {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Token is required' }) };
     }
 
+    const JWT_SECRET = process.env.JWT_SECRET;
+    if (!JWT_SECRET) {
+      return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Missing JWT_SECRET' }) };
+    }
+
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (e) {
       return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
-    const {
-      setupIntentId,
-      stripeCustomerId,
-      flow,
-      customerName,
-      customerEmail,
-      customerPhone
-    } = decoded;
+    const setupIntentId = decoded.setupIntentId;
+    const customerName = decoded.customerName || '';
+    const customerEmail = decoded.customerEmail || '';
+    const customerPhone = decoded.customerPhone || '';
 
-    // Mark the customer/order as declined.
-    if (stripeCustomerId) {
-      try {
-        await stripe.customers.update(stripeCustomerId, {
-          metadata: {
-            kraus_order_status: 'declined',
-            kraus_invoice_sent: 'false'
-          }
-        });
-      } catch (e) {
-        console.error('Failed to update customer metadata:', e.message);
-      }
-    }
-
-    // Optional: detach the payment method so it is not retained.
-    // (If you prefer to keep it in case you later accept the same order, remove this block.)
     if (setupIntentId) {
       try {
-        const si = await stripe.setupIntents.retrieve(setupIntentId);
-        if (si && si.payment_method) {
-          await stripe.paymentMethods.detach(si.payment_method);
-        }
+        // Cancel the SetupIntent (releases card-on-file setup)
+        await stripe.setupIntents.cancel(setupIntentId);
       } catch (e) {
-        console.error('Failed to detach payment method (non-fatal):', e.message);
+        // Not fatal; SetupIntent may already be succeeded/cannot cancel in some states
+        console.warn('SetupIntent cancel failed:', e.message);
       }
     }
 
-    // Notify customer (optional)
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
         await twilio.messages.create({
-          body: `Hi ${customerName || ''} — we’re sorry, but we can’t accommodate this request. No charge was made.`.trim(),
+          body: `Hi${customerName ? ' ' + customerName : ''} — we’re unable to fulfill your request. No charges were made.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
       } catch (e) {
-        console.error('SMS error:', e.message);
+        console.warn('Twilio SMS failed:', e.message);
       }
     }
 
-    const resend = getResendClient();
-    if (resend && customerEmail) {
-      try {
-        await resend.emails.send({
-          from: 'Kraus\' Tables & Chairs <orders@kraustablesandchairs.com>',
-          to: customerEmail,
-          subject: 'Request Update',
-          html: `<p>Hi ${customerName || 'there'},</p><p>We’re sorry, but we can’t accommodate this request. No charge was made.</p>`
-        });
-      } catch (e) {
-        console.error('Email error:', e.message);
-      }
-    }
+    await sendEmailDeclined({ to: customerEmail, customerName });
 
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', ...cors },
-      body: JSON.stringify({ success: true, message: 'Request declined (no charge)', flow: flow || null })
+      body: JSON.stringify({ success: true, message: 'Request declined (no charges made)' })
     };
   } catch (error) {
     console.error('Decline error:', error);
-    return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Failed to decline request', details: error.message }) };
+    return {
+      statusCode: 500,
+      headers: cors,
+      body: JSON.stringify({ error: 'Failed to decline', details: error.message })
+    };
   }
 };
