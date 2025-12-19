@@ -114,6 +114,39 @@ const cors = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+// ---- Stripe metadata helpers -------------------------------------------------
+const META_MAX = 350;
+
+// Stripe metadata values must be strings and have length limits.
+// This ensures we never exceed Stripe's per-field string constraints.
+function metaValue(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'string') return v.slice(0, META_MAX);
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v).slice(0, META_MAX);
+  try {
+    return JSON.stringify(v).slice(0, META_MAX);
+  } catch {
+    return String(v).slice(0, META_MAX);
+  }
+}
+
+// Only allow simple UTM-ish keys, and force every value to a safe string.
+// This avoids accidentally spreading large/complex objects into metadata.
+function sanitizeUtm(utm) {
+  const allowed = new Set([
+    'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
+    'gclid','fbclid','msclkid'
+  ]);
+  const out = {};
+  if (!utm || typeof utm !== 'object') return out;
+
+  for (const [k, v] of Object.entries(utm)) {
+    if (!allowed.has(k)) continue;
+    out[k] = metaValue(v);
+  }
+  return out;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: cors };
@@ -370,98 +403,49 @@ exports.handler = async (event) => {
     const orderSummary = validItems
       .map(item => `${item.qty}x ${item.name}`)
       .join(', ')
-      .substring(0, 500);
+      .substring(0, 350);
 
-    // --- Create/Reuse Stripe Customer and Checkout Session (SETUP MODE) ---
-    const customerEmail = (customer.email || '').trim() || undefined;
-    const customerName = (customer.name || '').trim() || undefined;
-    const customerPhone = (customer.phone || '').trim() || undefined;
-
-    // Store full order details on the customer so we can invoice later without a separate database.
-    // NOTE: Customer metadata values are limited; we store a compact summary in metadata and the full payload compressed in description.
-    const orderPayload = {
-      flow: 'full_service',
-      created_at: new Date().toISOString(),
-      customer: { name: customerName || '', email: customerEmail || '', phone: customerPhone || '' },
-      location: {
-        street: location.street || '',
-        address2: location.address2 || '',
-        city: location.city || '',
-        state: location.state || '',
-        zip: location.zip || '',
-        zip5: zip5 || '',
-        notes: (location.notes || '').substring(0, 1000)
-      },
-      schedule: {
-        dropoff_date: schedule.dropoff_date || '',
-        dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
-        dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
-        pickup_date: schedule.pickup_date || '',
-        pickup_timeslot_type: schedule.pickup_timeslot_type || '',
-        pickup_timeslot_value: schedule.pickup_timeslot_value || ''
-      },
-      items: validItems,
-      pricing_cents: {
-        products_subtotal: productsSubtotalC,
-        delivery: deliveryC,
-        congestion: congestionC,
-        rush: rushC,
-        dropoff_timeslot: dropoffTimeslotC,
-        pickup_timeslot: pickupTimeslotC,
-        extra_days: extraDays,
-        extended: extendedC,
-        min_order: minC,
-        tax: taxC,
-        total: taxableC + taxC
-      }
-    };
-
-    const compressOrder = (obj) => {
-      const jsonStr = JSON.stringify(obj);
-      const zlib = require('zlib');
-      const buf = zlib.deflateSync(Buffer.from(jsonStr, 'utf8'), { level: 9 });
-      return buf.toString('base64');
-    };
-
-    const orderBlobB64 = compressOrder(orderPayload);
-    const orderDesc = `KRAUS_ORDER_B64:${orderBlobB64}`;
-
-    const stripeCustomer = await stripe.customers.create({
-      email: customerEmail,
-      name: customerName,
-      phone: customerPhone,
-      description: orderDesc,
-      metadata: {
-        kraus_flow: 'full_service',
-        kraus_order_status: 'pending_approval',
-        kraus_dropoff_date: schedule.dropoff_date || '',
-        kraus_invoice_sent: 'false',
-        kraus_total_cents: String(taxableC + taxC)
-      }
-    });
-
-    // Create a Checkout Session in SETUP mode (collect and save card; no charge now).
+    // --- Create Stripe checkout session with MANUAL CAPTURE ---
     const session = await stripe.checkout.sessions.create({
       custom_text: {
         submit: {
           message:
-            "No charge will be made at checkout. We’ll review your request (usually within two business hours) and confirm availability before charging your deposit. If any details need clarification or if additional fees apply based on your location or venue, we’ll call you first."
+            "Your card will not be charged—this is an authorization only. We’ll review your request within two business hours and confirm availability before capturing payment. If any details need clarification or if additional fees apply based on your location or venue, we’ll call you first."
         }
       },
-      mode: 'setup',
-      customer: stripeCustomer.id,
+      mode: 'payment',
+      line_items,
       success_url: success_url || 'https://example.com/thank-you-full-service',
       cancel_url: cancel_url || 'https://example.com',
-      // Save helpful metadata for the webhook (owner email / approve link).
+      customer_email: customer.email || undefined,
+      // ALL ORDERS USE MANUAL CAPTURE
+      payment_intent_data: {
+        capture_method: 'manual',
+        metadata: {
+          flow: 'full_service',
+          rush: String(isRush), // Store frontend rush flag if provided
+          congestion: String(congestionC > 0),
+          order_summary: orderSummary,
+          // Customer info
+          customer_name: customer.name || '',
+          customer_phone: customer.phone || '',
+          customer_email: customer.email || '',
+          // Schedule
+          dropoff_date: schedule.dropoff_date || '',
+          dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
+          dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
+          pickup_date: schedule.pickup_date || '',
+          pickup_timeslot_type: schedule.pickup_timeslot_type || '',
+          pickup_timeslot_value: schedule.pickup_timeslot_value || '',
+        }
+      },
       metadata: {
         flow: 'full_service',
         rush: String(isRush),
         congestion: String(congestionC > 0),
-        order_summary: orderSummary,
-        // Customer info
-        customer_name: customer.name || '',
-        customer_phone: customer.phone || '',
-        customer_email: customer.email || '',
+        name: customer.name || '',
+        phone: customer.phone || '',
+        email: customer.email || '',
         // Location
         street: location.street || '',
         address2: location.address2 || '',
@@ -469,7 +453,7 @@ exports.handler = async (event) => {
         state: location.state || '',
         zip: location.zip || '',
         zip5: zip5 || '',
-        location_notes: (location.notes || '').substring(0, 500),
+        location_notes: (location.notes || '').substring(0, 350),
         // Schedule
         dropoff_date: schedule.dropoff_date || '',
         dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
@@ -478,7 +462,7 @@ exports.handler = async (event) => {
         pickup_timeslot_type: schedule.pickup_timeslot_type || '',
         pickup_timeslot_value: schedule.pickup_timeslot_value || '',
         // Products
-        items: JSON.stringify(validItems).substring(0, 500),
+        items: JSON.stringify(validItems).substring(0, 350),
         // Pricing breakdown
         products_subtotal_cents: String(productsSubtotalC),
         delivery_cents: String(deliveryC),
@@ -491,8 +475,7 @@ exports.handler = async (event) => {
         min_order_cents: String(minC),
         tax_cents: String(taxC),
         total_cents: String(taxableC + taxC),
-        stripe_customer_id: stripeCustomer.id,
-        ...utm
+        ...sanitizeUtm(utm)
       }
     });
 
