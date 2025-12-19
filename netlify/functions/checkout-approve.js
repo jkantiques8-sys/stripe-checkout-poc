@@ -143,44 +143,21 @@ exports.handler = async (event) => {
 
     const dropoffDateStr = md.dropoff_date || decoded.orderDetails?.dropoff_date || '';
     const dropoffDate = parseYYYYMMDD(dropoffDateStr);
-
-    // Normalize "today" to midnight to avoid off-by-one behavior
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
     const daysUntilDropoff = dropoffDate ? daysBetween(today, dropoffDate) : 999;
 
     // Retrieve setup intent to find saved payment method + customer
     const si = await stripe.setupIntents.retrieve(setupIntentId);
+    const customerId = si.customer || decoded.customerId || session.customer;
     const paymentMethodId = si.payment_method;
 
-    let customerId = si.customer || decoded.customerId || session.customer;
-
-    if (!paymentMethodId) {
+    if (!customerId || !paymentMethodId) {
       return {
         statusCode: 409,
         headers: cors,
-        body: JSON.stringify({ error: 'Missing payment method on SetupIntent' })
+        body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' })
       };
     }
-
-    // If customer missing (should be rare now), create one and attach PM
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: customerEmail || undefined,
-        name: customerName || undefined,
-        phone: customerPhone || undefined,
-        metadata: { checkout_session_id: sessionId }
-      });
-      customerId = customer.id;
-
-      await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
-    }
-
-    // Set default PM (helps invoices and future off-session actions)
-    await stripe.customers.update(customerId, {
-      invoice_settings: { default_payment_method: paymentMethodId }
-    });
 
     // Determine charge now: full-service = 30% deposit; self-serve = 100%
     const depositPercent = flow === 'self_service' ? 1.0 : 0.30;
@@ -211,6 +188,7 @@ exports.handler = async (event) => {
       // Fallback: send a payment link (Checkout Session)
       const paySession = await stripe.checkout.sessions.create({
         mode: 'payment',
+        payment_method_types: ['card'],
         customer: customerId,
         success_url: `${process.env.SITE_URL || ''}/?deposit=paid`,
         cancel_url: `${process.env.SITE_URL || ''}/?deposit=cancelled`,
@@ -253,34 +231,9 @@ exports.handler = async (event) => {
     let invoiceId = null;
 
     if (flow !== 'self_service' && balanceCents > 0) {
-      const shouldSendNow = daysUntilDropoff <= 7;
-
-      // Create the invoice FIRST (draft). We'll attach line items directly to THIS invoice.
-      const invoice = await stripe.invoices.create({
-        customer: customerId,
-        collection_method: 'send_invoice',
-        days_until_due: shouldSendNow ? 1 : 2,
-        auto_advance: false, // we finalize/send manually for deterministic behavior
-        metadata: {
-          kraus_flow: 'full_service',
-          checkout_session_id: sessionId,
-          setup_intent_id: setupIntentId,
-          deposit_payment_intent_id: pi.id,
-          dropoff_date: dropoffDateStr || '',
-          kraus_send_ts: (() => {
-            if (shouldSendNow) return String(Math.floor(Date.now() / 1000));
-            if (!dropoffDate) return '';
-            const sendDate = new Date(dropoffDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-            sendDate.setHours(9, 0, 0, 0);
-            return String(Math.floor(sendDate.getTime() / 1000));
-          })()
-        }
-      });
-
-      invoiceId = invoice.id;
-
-      // Build invoice lines for FULL total, then subtract deposit as a negative line item.
+      // Build invoice items for FULL total, then subtract deposit as a negative line item.
       const invoiceItems = [];
+
       const addLine = (label, cents) => {
         const n = Number(cents || 0);
         if (!Number.isFinite(n) || n === 0) return;
@@ -297,32 +250,57 @@ exports.handler = async (event) => {
       addLine('Minimum order surcharge', md.min_order_cents);
       addLine('Sales tax', md.tax_cents);
 
-      // Attach positive lines to THIS invoice
+      // Create invoice items
       for (const it of invoiceItems) {
         await stripe.invoiceItems.create({
           customer: customerId,
-          invoice: invoice.id,
           currency: 'usd',
           amount: it.cents,
           description: it.label
         });
       }
 
-      // Attach negative deposit line to THIS invoice
+      // Negative line item for deposit already paid
       await stripe.invoiceItems.create({
         customer: customerId,
-        invoice: invoice.id,
         currency: 'usd',
         amount: -depositCents,
         description: 'Deposit paid'
       });
 
+      const shouldSendNow = daysUntilDropoff <= 7;
+
+      const invoice = await stripe.invoices.create({
+        customer: customerId,
+        payment_settings: { payment_method_types: ['card'] },
+        collection_method: 'send_invoice',
+        days_until_due: shouldSendNow ? 1 : 2,
+        auto_advance: shouldSendNow, // finalize automatically if sending now
+        metadata: {
+          kraus_flow: 'full_service',
+          checkout_session_id: sessionId,
+          setup_intent_id: setupIntentId,
+          deposit_payment_intent_id: pi.id,
+          dropoff_date: dropoffDateStr || '',
+          kraus_send_ts: (() => {
+            if (shouldSendNow) return String(Math.floor(Date.now() / 1000));
+            if (!dropoffDate) return '';
+            const sendDate = new Date(dropoffDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+            // send at 9am local-ish (server time)
+            sendDate.setHours(9, 0, 0, 0);
+            return String(Math.floor(sendDate.getTime() / 1000));
+          })()
+        }
+      });
+
+      invoiceId = invoice.id;
+
       if (shouldSendNow) {
-        const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
+        // Ensure finalized and sent
+        const finalized = invoice.status === 'draft' ? await stripe.invoices.finalizeInvoice(invoice.id) : invoice;
         const sent = await stripe.invoices.sendInvoice(finalized.id);
         invoiceHostedUrl = sent.hosted_invoice_url || null;
       }
-      // else: leave as draft; your scheduled function will finalize+send later using kraus_send_ts
     }
 
     // Notifications (optional)
