@@ -372,47 +372,96 @@ exports.handler = async (event) => {
       .join(', ')
       .substring(0, 500);
 
-    // --- Create Stripe checkout session with MANUAL CAPTURE ---
+    // --- Create/Reuse Stripe Customer and Checkout Session (SETUP MODE) ---
+    const customerEmail = (customer.email || '').trim() || undefined;
+    const customerName = (customer.name || '').trim() || undefined;
+    const customerPhone = (customer.phone || '').trim() || undefined;
+
+    // Store full order details on the customer so we can invoice later without a separate database.
+    // NOTE: Customer metadata values are limited; we store a compact summary in metadata and the full payload compressed in description.
+    const orderPayload = {
+      flow: 'full_service',
+      created_at: new Date().toISOString(),
+      customer: { name: customerName || '', email: customerEmail || '', phone: customerPhone || '' },
+      location: {
+        street: location.street || '',
+        address2: location.address2 || '',
+        city: location.city || '',
+        state: location.state || '',
+        zip: location.zip || '',
+        zip5: zip5 || '',
+        notes: (location.notes || '').substring(0, 1000)
+      },
+      schedule: {
+        dropoff_date: schedule.dropoff_date || '',
+        dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
+        dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
+        pickup_date: schedule.pickup_date || '',
+        pickup_timeslot_type: schedule.pickup_timeslot_type || '',
+        pickup_timeslot_value: schedule.pickup_timeslot_value || ''
+      },
+      items: validItems,
+      pricing_cents: {
+        products_subtotal: productsSubtotalC,
+        delivery: deliveryC,
+        congestion: congestionC,
+        rush: rushC,
+        dropoff_timeslot: dropoffTimeslotC,
+        pickup_timeslot: pickupTimeslotC,
+        extra_days: extraDays,
+        extended: extendedC,
+        min_order: minC,
+        tax: taxC,
+        total: taxableC + taxC
+      }
+    };
+
+    const compressOrder = (obj) => {
+      const jsonStr = JSON.stringify(obj);
+      const zlib = require('zlib');
+      const buf = zlib.deflateSync(Buffer.from(jsonStr, 'utf8'), { level: 9 });
+      return buf.toString('base64');
+    };
+
+    const orderBlobB64 = compressOrder(orderPayload);
+    const orderDesc = `KRAUS_ORDER_B64:${orderBlobB64}`;
+
+    const stripeCustomer = await stripe.customers.create({
+      email: customerEmail,
+      name: customerName,
+      phone: customerPhone,
+      description: orderDesc,
+      metadata: {
+        kraus_flow: 'full_service',
+        kraus_order_status: 'pending_approval',
+        kraus_dropoff_date: schedule.dropoff_date || '',
+        kraus_invoice_sent: 'false',
+        kraus_total_cents: String(taxableC + taxC)
+      }
+    });
+
+    // Create a Checkout Session in SETUP mode (collect and save card; no charge now).
     const session = await stripe.checkout.sessions.create({
       custom_text: {
         submit: {
           message:
-            "Your card will not be charged—this is an authorization only. We’ll review your request within two business hours and confirm availability before capturing payment. If any details need clarification or if additional fees apply based on your location or venue, we’ll call you first."
+            "No charge will be made at checkout. We’ll review your request (usually within two business hours) and confirm availability before charging your deposit. If any details need clarification or if additional fees apply based on your location or venue, we’ll call you first."
         }
       },
-      mode: 'payment',
-      line_items,
+      mode: 'setup',
+      customer: stripeCustomer.id,
       success_url: success_url || 'https://example.com/thank-you-full-service',
       cancel_url: cancel_url || 'https://example.com',
-      customer_email: customer.email || undefined,
-      // ALL ORDERS USE MANUAL CAPTURE
-      payment_intent_data: {
-        capture_method: 'manual',
-        metadata: {
-          flow: 'full_service',
-          rush: String(isRush), // Store frontend rush flag if provided
-          congestion: String(congestionC > 0),
-          order_summary: orderSummary,
-          // Customer info
-          customer_name: customer.name || '',
-          customer_phone: customer.phone || '',
-          customer_email: customer.email || '',
-          // Schedule
-          dropoff_date: schedule.dropoff_date || '',
-          dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
-          dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
-          pickup_date: schedule.pickup_date || '',
-          pickup_timeslot_type: schedule.pickup_timeslot_type || '',
-          pickup_timeslot_value: schedule.pickup_timeslot_value || '',
-        }
-      },
+      // Save helpful metadata for the webhook (owner email / approve link).
       metadata: {
         flow: 'full_service',
         rush: String(isRush),
         congestion: String(congestionC > 0),
-        name: customer.name || '',
-        phone: customer.phone || '',
-        email: customer.email || '',
+        order_summary: orderSummary,
+        // Customer info
+        customer_name: customer.name || '',
+        customer_phone: customer.phone || '',
+        customer_email: customer.email || '',
         // Location
         street: location.street || '',
         address2: location.address2 || '',
@@ -442,6 +491,7 @@ exports.handler = async (event) => {
         min_order_cents: String(minC),
         tax_cents: String(taxC),
         total_cents: String(taxableC + taxC),
+        stripe_customer_id: stripeCustomer.id,
         ...utm
       }
     });
