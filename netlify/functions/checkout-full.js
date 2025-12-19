@@ -114,38 +114,26 @@ const cors = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// ---- Stripe metadata helpers -------------------------------------------------
-const META_MAX = 350;
-
-// Stripe metadata values must be strings and have length limits.
-// This ensures we never exceed Stripe's per-field string constraints.
-function metaValue(v) {
-  if (v === null || v === undefined) return '';
-  if (typeof v === 'string') return v.slice(0, META_MAX);
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v).slice(0, META_MAX);
-  try {
-    return JSON.stringify(v).slice(0, META_MAX);
-  } catch {
-    return String(v).slice(0, META_MAX);
-  }
-}
-
-// Only allow simple UTM-ish keys, and force every value to a safe string.
-// This avoids accidentally spreading large/complex objects into metadata.
 function sanitizeUtm(utm) {
-  const allowed = new Set([
-    'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
-    'gclid','fbclid','msclkid'
-  ]);
+  const allowed = [
+    'utm_source',
+    'utm_medium',
+    'utm_campaign',
+    'utm_term',
+    'utm_content',
+    'gclid',
+    'fbclid'
+  ];
   const out = {};
   if (!utm || typeof utm !== 'object') return out;
-
-  for (const [k, v] of Object.entries(utm)) {
-    if (!allowed.has(k)) continue;
-    out[k] = metaValue(v);
+  for (const key of allowed) {
+    if (utm[key] == null) continue;
+    out[key] = String(utm[key]).slice(0, 350);
   }
   return out;
 }
+
+
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -403,61 +391,59 @@ exports.handler = async (event) => {
     const orderSummary = validItems
       .map(item => `${item.qty}x ${item.name}`)
       .join(', ')
-      .substring(0, 350);
+      .substring(0, 500);
 
-// --- Create Stripe Checkout session to SAVE CARD ONLY (no charge) ---
-const session = await stripe.checkout.sessions.create({
-  mode: 'setup',
-  success_url: success_url || 'https://example.com/thank-you-full-service',
-  cancel_url: cancel_url || 'https://example.com',
-  customer_email: customer.email || undefined,
+    // --- Create Stripe checkout session with MANUAL CAPTURE ---
+    const session = await stripe.checkout.sessions.create({
+      custom_text: {
+        submit: {
+          message:
+            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
+        }
+      },
+      mode: 'setup',
+      success_url: success_url || 'https://example.com/thank-you-full-service',
+      cancel_url: cancel_url || 'https://example.com',
+      customer_email: customer.email || undefined,
+      metadata: {
+        flow: 'full_service',
+        // pricing (cents)
+        products_subtotal_cents: String(productsSubtotalC),
+        delivery_cents: String(deliveryC),
+        congestion_cents: String(congestionC),
+        rush_cents: String(rushC),
+        dropoff_timeslot_cents: String(dropoffTimeslotC),
+        pickup_timeslot_cents: String(pickupTimeslotC),
+        extended_cents: String(extendedC),
+        min_order_cents: String(minC),
+        tax_cents: String(taxC),
+        total_cents: String(taxableC + taxC),
 
-  // Put all order data into metadata so webhook + approval can use it
-  metadata: {
-    flow: 'full_service',
-    // pricing
-    total_cents: String(totalC),
-    products_subtotal_cents: String(productsSubtotalC),
-    delivery_cents: String(deliveryC),
-    congestion_cents: String(congestionC),
-    rush_cents: String(rushC),
-    dropoff_timeslot_cents: String(dropoffTimeslotC),
-    pickup_timeslot_cents: String(pickupTimeslotC),
-    extended_cents: String(extendedC),
-    min_order_cents: String(minC),
-    tax_cents: String(taxC),
+        // schedule
+        dropoff_date: schedule.dropoff_date || '',
+        dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
+        dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
+        pickup_date: schedule.pickup_date || '',
+        pickup_timeslot_type: schedule.pickup_timeslot_type || '',
+        pickup_timeslot_value: schedule.pickup_timeslot_value || '',
 
-    // schedule
-    dropoff_date: schedule.dropoff_date || '',
-    dropoff_timeslot_type: schedule.dropoff_timeslot_type || '',
-    dropoff_timeslot_value: schedule.dropoff_timeslot_value || '',
-    pickup_date: schedule.pickup_date || '',
-    pickup_timeslot_type: schedule.pickup_timeslot_type || '',
-    pickup_timeslot_value: schedule.pickup_timeslot_value || '',
+        // customer + location
+        name: (customer.name || '').slice(0, 350),
+        phone: (customer.phone || '').slice(0, 350),
+        email: (customer.email || '').slice(0, 350),
+        street: (location.street || '').slice(0, 350),
+        address2: (location.address2 || '').slice(0, 350),
+        city: (location.city || '').slice(0, 350),
+        state: (location.state || '').slice(0, 350),
+        zip: (location.zip || '').slice(0, 350),
+        location_notes: String(location.notes || '').slice(0, 350),
 
-    // customer + location
-    name: customer.name || '',
-    phone: customer.phone || '',
-    email: customer.email || '',
-    street: location.street || '',
-    address2: location.address2 || '',
-    city: location.city || '',
-    state: location.state || '',
-    zip: location.zip || '',
-    location_notes: String(location.notes || '').slice(0, 350),
+        // items (trim hard)
+        items: JSON.stringify(validItems).slice(0, 350),
 
-    // items (trim hard)
-    items: JSON.stringify(validItems).slice(0, 350),
-  },
-
-  // This is what the customer sees on the Stripe page
-  custom_text: {
-    submit: {
-      message:
-        "This saves your card to reserve your request. We’ll review availability within ~2 hours. If approved, we will charge a 30% deposit and email an invoice for the remaining balance.",
-    },
-  },
-});
+        ...sanitizeUtm(utm)
+      }
+    });
 
     return {
       statusCode: 200,
