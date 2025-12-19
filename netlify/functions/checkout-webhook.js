@@ -721,7 +721,7 @@ exports.handler = async (event, context) => {
           <strong>Email:</strong> ${customerEmail || 'Unknown'}<br/>
           <strong>Invoice:</strong> ${invoice.number || invoice.id}<br/>
           <strong>Amount paid:</strong> ${formatMoney(amountPaid)}<br/>
-          <strong>Amount due (after payment):</strong> ${formatMoney(amountDue)}
+          <strong>Remaining balance: $0.00 (paid in full)</strong>
         </p>
         ${
           hostedUrl
