@@ -26,7 +26,7 @@ const getTwilioClient = () => {
 const SITE_URL =
   process.env.SITE_URL || 'https://enchanting-monstera-41f4df.netlify.app';
 
-const FROM_EMAIL = process.env.FROM_EMAIL || 'orders@kraustables.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || "Kraus’ Tables & Chairs <orders@kraustables.com>";
 const OWNER_EMAIL = process.env.OWNER_EMAIL || 'jonah@kraustables.com';
 const OWNER_PHONE = process.env.OWNER_PHONE; // e.g. "+1917…"
 const TWILIO_FROM = process.env.TWILIO_PHONE_NUMBER;
@@ -54,17 +54,6 @@ const formatMoney = (amount) => {
     maximumFractionDigits: 2
   })}`;
 };
-
-const escapeHtml = (value) => {
-  const s = value === null || value === undefined ? '' : String(value);
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-};
-
 
 // Add weekday name (Monday, Tuesday, etc.)
 const formatDate = (isoDate) => {
