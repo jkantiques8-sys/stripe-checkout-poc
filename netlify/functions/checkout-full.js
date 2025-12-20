@@ -178,7 +178,13 @@ exports.handler = async (event) => {
       throw new Error('Please select at least 1 item.');
     }
 
-    // --- Calculate delivery fee (30% of items) ---
+    
+    // Human-readable item summary for emails/SMS (qty only)
+    const itemsSummary = validItems
+      .map((it) => `${it.name} × ${it.qty}`)
+      .join('\n');
+
+// --- Calculate delivery fee (30% of items) ---
     const deliveryC = Math.round(productsSubtotalC * DELIVERY_RATE);
 
     // --- Manhattan congestion surcharge (flat $75 for Manhattan ZIPs) ---
@@ -279,7 +285,7 @@ exports.handler = async (event) => {
       custom_text: {
         submit: {
           message:
-            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll either charge the full amount for last‑minute/rush orders, or charge a 30% deposit and automatically charge the remaining balance the day before drop‑off."
+            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
         }
       },
       metadata: {
@@ -318,6 +324,8 @@ exports.handler = async (event) => {
 
         // items (trim hard)
         items: JSON.stringify(validItems).slice(0, 350),
+        // items (human readable, qty only)
+        items_summary: String(itemsSummary || '').slice(0, 500),
 
         // UTM (sanitized)
         ...sanitizeUtm(utm)
