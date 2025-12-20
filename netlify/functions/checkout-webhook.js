@@ -1,3 +1,14 @@
+
+
+function escapeHtml(input) {
+  const s = String(input ?? '');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 // checkout-webhooks.js
 // Handles Stripe checkout.session.completed, sends owner + customer
 // email notifications via Resend and an SMS alert via Twilio.
@@ -54,17 +65,6 @@ const formatMoney = (amount) => {
     maximumFractionDigits: 2
   })}`;
 };
-
-const escapeHtml = (value) => {
-  const s = value === null || value === undefined ? '' : String(value);
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-};
-
 
 // Add weekday name (Monday, Tuesday, etc.)
 const formatDate = (isoDate) => {
@@ -208,38 +208,34 @@ const formatPhoneNumber = (value) => {
   return value;
 };
 
-const buildItemsHtml = (items, itemsSummary) => {
-  // Prefer the server-generated summary when available (qty only).
-  if (itemsSummary) {
-    const lines = String(itemsSummary)
-      .split(/\n+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    if (!lines.length) return '';
-
-    return `
-      <h3 style="margin:24px 0 8px;font-size:16px;">Requested items</h3>
-      <ul style="margin:0 0 16px 18px; padding:0;">
-        ${lines.map((line) => `<li style="margin:4px 0;">${escapeHtml(line)}</li>`).join('')}
-      </ul>
-    `;
-  }
-
+const buildItemsHtml = (items) => {
   if (!items || !items.length) return '';
 
   return `
-    <h3 style="margin:24px 0 8px;font-size:16px;">Requested items</h3>
-    <ul style="margin:0 0 16px 18px; padding:0;">
-      ${items
-        .map((it) => {
-          const label = it.name || it.sku || 'Item';
-          const qty = Number(it.qty) || 0;
-          return `<li style="margin:4px 0;">${escapeHtml(label)} × ${qty}</li>`;
-        })
-        .join('')}
-    </ul>
-  `;
+    <h3 style="margin:24px 0 8px;font-size:15px;">Items</h3>
+    <table width="100%" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:14px;">
+      <thead>
+        <tr>
+          <th align="left">Item</th>
+          <th align="right">Qty</th>
+          <th align="right">Unit</th>
+          <th align="right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items
+          .map(
+            (item) => `
+          <tr>
+            <td>${item.name}</td>
+            <td align="right">${item.qty}</td>
+            <td align="right">${formatMoney(item.unit)}</td>
+            <td align="right">${formatMoney(item.total)}</td>
+          </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>`;
 };
 
 const buildOrderSummaryRows = (details) => {
@@ -291,7 +287,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   const schedule = summarizeSchedule(details);
   const items = details.items || [];
 
-  const itemsHtml = buildItemsHtml(items, details.itemsSummary);
+  const itemsHtml = buildItemsHtml(items);
 
   const addressLines = [
     details.street,
@@ -377,7 +373,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
 const buildCustomerEmailHtml = (details) => {
   const schedule = summarizeSchedule(details);
   const items = details.items || [];
-  const itemsHtml = buildItemsHtml(items, details.itemsSummary);
+  const itemsHtml = buildItemsHtml(items);
 
   const addressLines = [
     details.street,
@@ -477,7 +473,7 @@ const buildCustomerEmailHtml = (details) => {
 const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   const schedule = summarizeSelfSchedule(details);
   const items = details.items || [];
-  const itemsHtml = buildItemsHtml(items, details.itemsSummary);
+  const itemsHtml = buildItemsHtml(items);
 
   const chairLines = [];
   if (details.selfQtyDark) chairLines.push(`${details.selfQtyDark} × dark chairs`);
@@ -721,10 +717,20 @@ exports.handler = async (event, context) => {
       console.warn('Failed to retrieve invoice customer:', e.message);
     }
 
-    const amountPaid = centsToNumber(invoice.amount_paid);
-    const amountDue = centsToNumber(invoice.amount_due);
+    const amountPaidCents = Number(invoice.amount_paid ?? 0);
+    const totalCents = Number(invoice.total ?? invoice.amount_due ?? 0);
+    const amountPaid = centsToNumber(amountPaidCents > 0 ? amountPaidCents : totalCents);
+    const amountDue = centsToNumber(totalCents);
     const hostedUrl = invoice.hosted_invoice_url || null;
     const pdfUrl = invoice.invoice_pdf || null;
+
+
+// If Stripe reports a $0 invoice paid (common when you create an invoice that nets to $0),
+// skip sending "payment received" emails to avoid confusing $0 receipts.
+if ((Number(invoice.total ?? invoice.amount_due ?? 0) === 0) && (Number(invoice.amount_paid ?? 0) === 0)) {
+  console.log('invoice.paid: $0 invoice; skipping payment-received emails', { invoice_id: invoice.id, number: invoice.number });
+  return { statusCode: 200, body: JSON.stringify({ received: true }) };
+}
 
     const subject = `✅ Invoice paid${invoice.number ? ` (${invoice.number})` : ''}`;
 
@@ -858,7 +864,6 @@ const totalNumber =
   0;
 
 const items = decodeItems(metadata.items);
-const itemsSummary = metadata.items_summary || null;
 
 const orderDetails = {
   flow,
@@ -911,8 +916,7 @@ const orderDetails = {
   minOrderFeeNumber,
   totalNumber,
 
-  items,
-  itemsSummary
+  items
 };
 
 
