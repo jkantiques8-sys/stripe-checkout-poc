@@ -67,7 +67,6 @@ async function sendEmailApproved({ to, customerName, depositCents, balanceCents,
       <p>Hi ${customerName || ''},</p>
       <p>Your request has been approved.</p>
       <p><strong>Deposit charged:</strong> ${depositStr}</p>
-      ${itemsHtml}
       ${balanceCents > 0 ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDate ? ` (for drop-off ${dropoffDate})` : ''}</p>` : ''}
       ${balanceCents > 0 ? invoiceLine : '<p>No remaining balance is due.</p>'}
       <p>If you have any questions, just reply to this email.</p>
@@ -136,12 +135,6 @@ exports.handler = async (event) => {
     // Retrieve session metadata (pricing + schedule)
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     const md = session.metadata || {};
-
-    // Human-readable item list (qty only), generated server-side in checkout-full
-    const itemsSummary = String(md.items_summary || '').trim();
-    const itemsHtml = itemsSummary
-      ? `<p><strong>Requested items</strong><br/>${escapeHtml(itemsSummary).replace(/\n/g, '<br/>')}</p>`
-      : '';
 
     const totalCents = Number(md.total_cents || decoded.orderDetails?.total_cents || 0);
     if (!Number.isFinite(totalCents) || totalCents <= 0) {
@@ -314,8 +307,13 @@ exports.handler = async (event) => {
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
+        const supportEmail = process.env.FROM_EMAIL || 'orders@kraustables.com';
         await twilio.messages.create({
-          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged. Automated text—replies not monitored. Email us if needed.`,
+          body: `Your Kraus’ Tables & Chairs request is approved.
+          A confirmation has been sent to your email.
+
+          Automated text — replies are not monitored.
+          Questions? Email ${supportEmail}.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
