@@ -55,6 +55,17 @@ const formatMoney = (amount) => {
   })}`;
 };
 
+const escapeHtml = (value) => {
+  const s = value === null || value === undefined ? '' : String(value);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+
 // Add weekday name (Monday, Tuesday, etc.)
 const formatDate = (isoDate) => {
   if (!isoDate) return 'Not provided';
