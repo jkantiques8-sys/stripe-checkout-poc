@@ -197,34 +197,38 @@ const formatPhoneNumber = (value) => {
   return value;
 };
 
-const buildItemsHtml = (items) => {
+const buildItemsHtml = (items, itemsSummary) => {
+  // Prefer the server-generated summary when available (qty only).
+  if (itemsSummary) {
+    const lines = String(itemsSummary)
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (!lines.length) return '';
+
+    return `
+      <h3 style="margin:24px 0 8px;font-size:16px;">Requested items</h3>
+      <ul style="margin:0 0 16px 18px; padding:0;">
+        ${lines.map((line) => `<li style="margin:4px 0;">${escapeHtml(line)}</li>`).join('')}
+      </ul>
+    `;
+  }
+
   if (!items || !items.length) return '';
 
   return `
-    <h3 style="margin:24px 0 8px;font-size:15px;">Items</h3>
-    <table width="100%" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:14px;">
-      <thead>
-        <tr>
-          <th align="left">Item</th>
-          <th align="right">Qty</th>
-          <th align="right">Unit</th>
-          <th align="right">Total</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${items
-          .map(
-            (item) => `
-          <tr>
-            <td>${item.name}</td>
-            <td align="right">${item.qty}</td>
-            <td align="right">${formatMoney(item.unit)}</td>
-            <td align="right">${formatMoney(item.total)}</td>
-          </tr>`
-          )
-          .join('')}
-      </tbody>
-    </table>`;
+    <h3 style="margin:24px 0 8px;font-size:16px;">Requested items</h3>
+    <ul style="margin:0 0 16px 18px; padding:0;">
+      ${items
+        .map((it) => {
+          const label = it.name || it.sku || 'Item';
+          const qty = Number(it.qty) || 0;
+          return `<li style="margin:4px 0;">${escapeHtml(label)} × ${qty}</li>`;
+        })
+        .join('')}
+    </ul>
+  `;
 };
 
 const buildOrderSummaryRows = (details) => {
@@ -276,7 +280,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   const schedule = summarizeSchedule(details);
   const items = details.items || [];
 
-  const itemsHtml = buildItemsHtml(items);
+  const itemsHtml = buildItemsHtml(items, details.itemsSummary);
 
   const addressLines = [
     details.street,
@@ -301,7 +305,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
     <p>Hi Jonah,</p>
 
-    <p><strong>New Order Requires Approval</strong></p>
+    <p><strong>New Order Requires Manual Approval</strong></p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Customer</h3>
     <p style="margin:0;">
@@ -338,7 +342,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </table>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
-    <p style="margin:0 0 12px;">Approve to charge the card (deposit/full) or decline:</p>
+    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
 
     <p>
       <a href="${approveUrl}"
@@ -352,7 +356,8 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </p>
 
     <p style="margin-top:16px;font-size:12px;color:#555;">
-      Note: These links expire in 24 hours. The customer's card will not be charged until you approve.
+      Note: These links expire in 24 hours. The customer's payment will remain
+      on hold until you approve or decline.
     </p>
   </div>
   `;
@@ -361,7 +366,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
 const buildCustomerEmailHtml = (details) => {
   const schedule = summarizeSchedule(details);
   const items = details.items || [];
-  const itemsHtml = buildItemsHtml(items);
+  const itemsHtml = buildItemsHtml(items, details.itemsSummary);
 
   const addressLines = [
     details.street,
@@ -393,12 +398,11 @@ const buildCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-  <strong>Your card has not been charged yet.</strong>
+  <strong>Your card has not been charged—this is an authorization only.</strong>  
 </p>
 
 <p>
-  After we approve your request, we’ll charge a <strong>30% deposit</strong> and then automatically charge the remaining balance <strong>the day before your drop-off</strong>.
-  (For rush orders within 2 days, payment is charged in full at approval.)
+  We will only capture payment after your request is approved. We usually approve requests withing 2 business hours. If clarification is needed or additional charges apply, we will call you before proceeding.
 </p>
 
 <p>
@@ -462,7 +466,7 @@ const buildCustomerEmailHtml = (details) => {
 const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   const schedule = summarizeSelfSchedule(details);
   const items = details.items || [];
-  const itemsHtml = buildItemsHtml(items);
+  const itemsHtml = buildItemsHtml(items, details.itemsSummary);
 
   const chairLines = [];
   if (details.selfQtyDark) chairLines.push(`${details.selfQtyDark} × dark chairs`);
@@ -517,16 +521,16 @@ const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </table>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
-    <p style="margin:0 0 12px;">Approve to charge the card (deposit/full) or decline:</p>
+    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
 
     <p style="margin:0 0 4px;">
       <a href="${approveUrl}"
          style="display:inline-block;margin-right:12px;padding:10px 16px;border-radius:4px;background:#2f855a;color:#fff;text-decoration:none;">
-        Approve &amp; Charge
+        Approve &amp; Capture
       </a>
       <a href="${declineUrl}"
          style="display:inline-block;padding:10px 16px;border-radius:4px;background:#c53030;color:#fff;text-decoration:none;">
-        Decline &amp; Remove card
+        Decline &amp; Release Hold
       </a>
     </p>
 
@@ -549,7 +553,7 @@ const buildSelfCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-  <strong>Your card has not been charged yet.</strong>
+  <strong>Your card has not been charged—this is an authorization only.</strong>  
   We’ll call you within 2 hours to review your request and finalize your pickup plan:
 </p>
 
@@ -559,7 +563,7 @@ const buildSelfCustomerEmailHtml = (details) => {
 </ul>
 
 <p>
-  Once your request is approved and all details are confirmed, we will charge your card in full.
+  Once your request is approved and all details are confirmed, we will capture payment.  
 </p>
 
 <p>
@@ -843,6 +847,7 @@ const totalNumber =
   0;
 
 const items = decodeItems(metadata.items);
+const itemsSummary = metadata.items_summary || null;
 
 const orderDetails = {
   flow,
@@ -895,7 +900,8 @@ const orderDetails = {
   minOrderFeeNumber,
   totalNumber,
 
-  items
+  items,
+  itemsSummary
 };
 
 
