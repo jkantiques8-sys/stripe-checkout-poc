@@ -310,10 +310,9 @@ exports.handler = async (event) => {
         const supportEmail = process.env.FROM_EMAIL || 'orders@kraustables.com';
         await twilio.messages.create({
           body: `Your Kraus’ Tables & Chairs request is approved.
-          A confirmation has been sent to your email.
 
-          Automated text — replies are not monitored.
-          Questions? Email ${supportEmail}.`,
+Automated text — replies aren’t monitored.
+Questions? Email ${supportEmail}.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
