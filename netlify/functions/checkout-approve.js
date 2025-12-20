@@ -23,6 +23,15 @@ function getResendClient() {
   return resendClient;
 }
 
+const FROM_EMAIL = process.env.FROM_EMAIL || "Kraus’ Tables & Chairs <orders@kraustables.com>";
+
+function extractEmail(fromValue) {
+  if (!fromValue) return null;
+  const s = String(fromValue);
+  const m = /<([^>]+)>/.exec(s);
+  return (m && m[1]) ? m[1].trim() : s.trim();
+}
+
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
@@ -51,7 +60,7 @@ function daysBetween(a, b) {
 
 async function sendEmailApproved({ to, customerName, depositCents, balanceCents, dropoffDate, invoiceHostedUrl }) {
   const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL) return;
+  if (!resend || !FROM_EMAIL) return;
 
   const depositStr = `$${centsToDollars(depositCents)}`;
   const balanceStr = `$${centsToDollars(balanceCents)}`;
@@ -60,7 +69,7 @@ async function sendEmailApproved({ to, customerName, depositCents, balanceCents,
     : `<p>Your remaining balance will be invoiced by email.</p>`;
 
   await resend.emails.send({
-    from: process.env.FROM_EMAIL,
+    from: FROM_EMAIL,
     to,
     subject: "Your Kraus' Tables & Chairs request is approved",
     html: `
@@ -76,12 +85,12 @@ async function sendEmailApproved({ to, customerName, depositCents, balanceCents,
 
 async function sendEmailDepositPaymentLink({ to, customerName, depositCents, paymentUrl }) {
   const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL) return;
+  if (!resend || !FROM_EMAIL) return;
 
   const depositStr = `$${centsToDollars(depositCents)}`;
 
   await resend.emails.send({
-    from: process.env.FROM_EMAIL,
+    from: FROM_EMAIL,
     to,
     subject: "Action needed: confirm your deposit",
     html: `
@@ -307,13 +316,12 @@ exports.handler = async (event) => {
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
-        const supportEmail = process.env.FROM_EMAIL || 'orders@kraustables.com';
+        const supportEmail = extractEmail(FROM_EMAIL) || 'orders@kraustables.com';
         await twilio.messages.create({
           body: `Your Kraus’ Tables & Chairs request is approved.
-          A confirmation has been sent to your email.
 
-          Automated text — replies are not monitored.
-          Questions? Email ${supportEmail}.`,
+Automated text — replies aren’t monitored.
+Questions? Email ${supportEmail}.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
