@@ -301,7 +301,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
     <p>Hi Jonah,</p>
 
-    <p><strong>New Order Requires Manual Approval</strong></p>
+    <p><strong>New Order Requires Approval</strong></p>
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Customer</h3>
     <p style="margin:0;">
@@ -338,7 +338,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </table>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
-    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
+    <p style="margin:0 0 12px;">Approve to charge the card (deposit/full) or decline:</p>
 
     <p>
       <a href="${approveUrl}"
@@ -352,8 +352,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </p>
 
     <p style="margin-top:16px;font-size:12px;color:#555;">
-      Note: These links expire in 24 hours. The customer's payment will remain
-      on hold until you approve or decline.
+      Note: These links expire in 24 hours. The customer's card will not be charged until you approve.
     </p>
   </div>
   `;
@@ -517,16 +516,16 @@ const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
     </table>
 
     <h3 style="margin:24px 0 8px;font-size:15px;">Action Required</h3>
-    <p style="margin:0 0 12px;">Capture or cancel the payment:</p>
+    <p style="margin:0 0 12px;">Approve to charge the card (deposit/full) or decline:</p>
 
     <p style="margin:0 0 4px;">
       <a href="${approveUrl}"
          style="display:inline-block;margin-right:12px;padding:10px 16px;border-radius:4px;background:#2f855a;color:#fff;text-decoration:none;">
-        Approve &amp; Capture
+        Approve &amp; Charge
       </a>
       <a href="${declineUrl}"
          style="display:inline-block;padding:10px 16px;border-radius:4px;background:#c53030;color:#fff;text-decoration:none;">
-        Decline &amp; Release Hold
+        Decline &amp; Remove card
       </a>
     </p>
 
