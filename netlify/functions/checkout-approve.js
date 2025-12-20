@@ -318,30 +318,20 @@ exports.handler = async (event) => {
       itemsSummary
     });
 
-// Customer SMS (transactional; clarify replies not monitored)
-if (customerPhone) {
-  const supportEmail = extractEmail(process.env.FROM_EMAIL);
-  const smsBody = [
-    "Your Kraus’ Tables & Chairs request is approved. A confirmation has been sent to your email.",
-    payInFullNow ? `Payment processed now: $${centsToDollars(paidNowCents)}.` : `Deposit charged: $${centsToDollars(paidNowCents)}.`,
-    balanceCents > 0 ? `Remaining balance: $${centsToDollars(balanceCents)} (auto-charged day before drop-off).` : 'Paid in full.',
-    'Automated text — replies are not monitored.',
-    `Questions? Email ${supportEmail}.`,
-  ].join(' ');
+    // Notifications (optional)
+    const twilio = getTwilioClient();
+    if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
+      try {
+        await twilio.messages.create({
+          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged. Automated text—replies not monitored. Email us if needed.`,
+          from: process.env.TWILIO_PHONE_NUMBER,
+          to: customerPhone
+        });
+      } catch (e) {
+        console.warn('Twilio SMS failed:', e.message);
+      }
+    }
 
-  try {
-    console.log('SMS: attempting send', { to: customerPhone });
-    await sendCustomerSms({ toPhone: customerPhone, body: smsBody });
-    console.log('SMS: sent OK', { to: customerPhone });
-  } catch (err) {
-    console.error('SMS: send failed', {
-      message: err?.message,
-      code: err?.code,
-      status: err?.status,
-      details: err?.details,
-    });
-  }
-}
 
 
     // Owner SMS (optional)
