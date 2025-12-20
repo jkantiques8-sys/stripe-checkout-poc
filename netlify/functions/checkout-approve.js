@@ -320,7 +320,9 @@ exports.handler = async (event) => {
 
     // Notifications (optional)
     const twilio = getTwilioClient();
-    if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
+    const ENABLE_CUSTOMER_SMS = process.env.ENABLE_CUSTOMER_SMS === 'true';
+
+    if (ENABLE_CUSTOMER_SMS && twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
         await twilio.messages.create({
           body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged. Automated text—replies not monitored. Email us if needed.`,
