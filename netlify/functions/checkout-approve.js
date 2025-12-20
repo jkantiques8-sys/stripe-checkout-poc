@@ -122,7 +122,7 @@ async function sendEmailApproved({
               <strong>the day before your drop-off${autoPayDatePretty ? ` (${autoPayDatePretty})` : ''}</strong>.
               If you need to make changes, reply to this email any time before then.
             </p>
-            ${invoiceId ? `<p style="color:#555;font-size:12px;margin-top:12px;">(Internal ref: ${invoiceId})</p>` : ''}
+            
           `
       }
 
