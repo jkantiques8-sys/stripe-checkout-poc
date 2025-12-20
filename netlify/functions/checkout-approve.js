@@ -1,4 +1,12 @@
 // netlify/functions/checkout-approve.js
+// Approve an order:
+// - If rush (drop-off within 2 days per checkout-full metadata) OR same/next-day -> charge 100% now
+// - Else -> charge 30% now, schedule remaining balance to auto-charge the day before drop-off
+// Notes:
+// - Autopay is implemented by creating a draft invoice for the remaining balance with
+//   collection_method=charge_automatically and automatically_finalizes_at set to NY time.
+// - No "pay remaining balance" links are emailed.
+
 const Stripe = require('stripe');
 const jwt = require('jsonwebtoken');
 
@@ -34,16 +42,6 @@ function centsToDollars(cents) {
   return (n / 100).toFixed(2);
 }
 
-
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function parseYYYYMMDD(s) {
   if (!s || typeof s !== 'string') return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
@@ -54,69 +52,109 @@ function parseYYYYMMDD(s) {
 }
 
 function daysBetween(a, b) {
-  // whole days (b - a)
   const ms = 24 * 60 * 60 * 1000;
   return Math.floor((b.getTime() - a.getTime()) / ms);
 }
 
-async function sendEmailApproved({ to, customerName, depositCents, balanceCents, dropoffDate }) {
-  const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL) return;
+// Returns offset minutes for America/New_York at a given UTC Date.
+// Example: -300 for EST, -240 for EDT.
+function nyOffsetMinutes(atDateUtc) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      timeZoneName: 'shortOffset',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+    const parts = fmt.formatToParts(atDateUtc);
+    const tz = parts.find(p => p.type === 'timeZoneName')?.value || '';
+    // tz looks like "GMT-5" or "GMT-04:00"
+    const m = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(tz);
+    if (!m) return -300; // safe default (EST)
+    const sign = m[1] === '-' ? -1 : 1;
+    const hh = Number(m[2] || 0);
+    const mm = Number(m[3] || 0);
+    return sign * (hh * 60 + mm);
+  } catch {
+    return -300;
+  }
+}
 
-  const depositStr = `$${centsToDollars(depositCents)}`;
+// Build a UTC Date for a specific local NY time on a YYYY-MM-DD day.
+function nyLocalToUtc(yyyyMmDd, hour24 = 10, minute = 0) {
+  // Start with a "naive" UTC date at the intended wall-clock time.
+  // Then adjust by NY offset for that instant.
+  const base = new Date(`${yyyyMmDd}T${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`);
+  const offsetMin = nyOffsetMinutes(base);
+  return new Date(base.getTime() - offsetMin * 60 * 1000);
+}
+
+function extractEmail(fromEmailEnv) {
+  // Accept either "orders@..." or "Name <orders@...>"
+  const s = String(fromEmailEnv || '').trim();
+  const m = /<([^>]+)>/.exec(s);
+  return (m ? m[1] : s) || 'orders@kraustables.com';
+}
+
+async function sendEmailApproved({
+  to,
+  customerName,
+  paidNowCents,
+  balanceCents,
+  dropoffDateStr,
+  itemsSummary
+}) {
+  const resend = getResendClient();
+  const from = process.env.FROM_EMAIL;
+  if (!resend || !from || !to) return;
+
+  const paidNowStr = `$${centsToDollars(paidNowCents)}`;
   const balanceStr = `$${centsToDollars(balanceCents)}`;
 
-  let autopayDateStr = '';
-  if (dropoffDate) {
-    const [yy, mm, dd] = String(dropoffDate).split('-').map((x) => parseInt(x, 10));
-    if (!Number.isNaN(yy) && !Number.isNaN(mm) && !Number.isNaN(dd)) {
-      const d = new Date(Date.UTC(yy, mm - 1, dd));
-      d.setUTCDate(d.getUTCDate() - 1);
-      const y = d.getUTCFullYear();
-      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(d.getUTCDate()).padStart(2, '0');
-      autopayDateStr = `${y}-${m}-${day}`;
-    }
-  }
+  const balanceLine = balanceCents > 0
+    ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDateStr ? ` (for drop-off ${dropoffDateStr})` : ''}</p>
+       <p>We will automatically charge the remaining balance the day before your drop-off.</p>`
+    : `<p><strong>Remaining balance:</strong> $0.00 (paid in full)</p>`;
 
-  const autopayLine = autopayDateStr
-    ? `We will automatically charge the remaining balance the day before your drop-off (${autopayDateStr}).`
-    : `We will automatically charge the remaining balance the day before your drop-off.`;
+  const itemsBlock = itemsSummary
+    ? `<p><strong>Requested items</strong></p><pre style="white-space:pre-wrap">${itemsSummary}</pre>`
+    : '';
 
   await resend.emails.send({
-    from: process.env.FROM_EMAIL,
+    from,
     to,
     subject: "Your Kraus' Tables & Chairs request is approved",
     html: `
-      <p>Hi ${escapeHtml(customerName || '')},</p>
+      <p>Hi ${customerName || ''},</p>
       <p>Your request has been approved.</p>
-      <p><strong>Deposit charged:</strong> ${depositStr}</p>
-      <p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDate ? ` (for drop-off ${escapeHtml(dropoffDate)})` : ''}</p>
-      <p>${escapeHtml(autopayLine)}</p>
-      <p>If you need to make changes, just reply to this email.</p>
-      <p>— Kraus' Tables & Chairs</p>
+      <p><strong>Payment processed now:</strong> ${paidNowStr}</p>
+      ${balanceLine}
+      ${itemsBlock}
+      <p>If you have any questions, just reply to this email.</p>
     `
   });
 }
 
-async function sendEmailDepositPaymentLink({ to, customerName, depositCents, paymentUrl }) {
-  const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL) return;
+async function sendOwnerSms({ body }) {
+  const client = getTwilioClient();
+  if (!client) return;
+  const to = process.env.OWNER_SMS_TO;
+  const from = process.env.TWILIO_FROM_NUMBER;
+  if (!to || !from) return;
+  await client.messages.create({ to, from, body });
+}
 
-  const depositStr = `$${centsToDollars(depositCents)}`;
-
-  await resend.emails.send({
-    from: process.env.FROM_EMAIL,
-    to,
-    subject: "Action needed: confirm your deposit",
-    html: `
-      <p>Hi ${customerName || ''},</p>
-      <p>Your request has been approved, but we couldn’t charge your deposit automatically.</p>
-      <p><strong>Deposit due:</strong> ${depositStr}</p>
-      <p><a href="${paymentUrl}">Pay the deposit here</a>.</p>
-      <p>If you need help, reply to this email.</p>
-    `
-  });
+async function sendCustomerSms({ toPhone, body }) {
+  const client = getTwilioClient();
+  if (!client) return;
+  const from = process.env.TWILIO_FROM_NUMBER;
+  if (!toPhone || !from) return;
+  await client.messages.create({ to: toPhone, from, body });
 }
 
 exports.handler = async (event) => {
@@ -125,9 +163,11 @@ exports.handler = async (event) => {
   }
 
   try {
-    const qsToken = event.queryStringParameters && event.queryStringParameters.token;
+    const qsToken = event.queryStringParameters?.token;
     let bodyToken = null;
-    if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
+    if (event.body) {
+      try { bodyToken = JSON.parse(event.body).token; } catch {}
+    }
     const token = qsToken || bodyToken;
 
     if (!token) {
@@ -142,7 +182,7 @@ exports.handler = async (event) => {
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
-    } catch (e) {
+    } catch {
       return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
@@ -157,7 +197,6 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId or sessionId in token' }) };
     }
 
-    // Retrieve session metadata (pricing + schedule)
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     const md = session.metadata || {};
 
@@ -166,10 +205,23 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing or invalid total_cents' }) };
     }
 
-    const dropoffDateStr = md.dropoff_date || decoded.orderDetails?.dropoff_date || '';
+    const dropoffDateStr = String(md.dropoff_date || decoded.orderDetails?.dropoff_date || '');
     const dropoffDate = parseYYYYMMDD(dropoffDateStr);
     const today = new Date();
     const daysUntilDropoff = dropoffDate ? daysBetween(today, dropoffDate) : 999;
+
+    const rushCents = Number(md.rush_cents || 0);
+    const isRush = Number.isFinite(rushCents) && rushCents > 0;
+
+    // Payment policy
+    // - Rush OR same/next day => full pay now
+    // - Else => 30% deposit now, remainder auto-charged day before drop-off
+    const payInFullNow = flow !== 'full_service' || isRush || daysUntilDropoff <= 1;
+    const depositPercent = payInFullNow ? 1.0 : 0.30;
+    const paidNowCents = Math.max(0, Math.round(totalCents * depositPercent));
+    const balanceCents = Math.max(0, totalCents - paidNowCents);
+
+    const itemsSummary = String(md.items_summary || '').trim();
 
     // Retrieve setup intent to find saved payment method + customer
     const si = await stripe.setupIntents.retrieve(setupIntentId);
@@ -177,183 +229,138 @@ exports.handler = async (event) => {
     const paymentMethodId = si.payment_method;
 
     if (!customerId || !paymentMethodId) {
-      return {
-        statusCode: 409,
-        headers: cors,
-        body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' })
-      };
+      return { statusCode: 409, headers: cors, body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' }) };
     }
 
-    // Determine charge now: full-service = 30% deposit; self-serve = 100%
-    const depositPercent = flow === 'self_service' ? 1.0 : 0.30;
-    const depositCents = Math.max(0, Math.round(totalCents * depositPercent));
-    const balanceCents = Math.max(0, totalCents - depositCents);
-
-    // Charge deposit/full amount off-session
-    let pi;
+    // Ensure the payment method is attached + set as default for invoices (so off-session charges work)
     try {
-      pi = await stripe.paymentIntents.create({
-        amount: depositCents,
-        currency: 'usd',
-        customer: customerId,
-        payment_method: paymentMethodId,
-        off_session: true,
-        confirm: true,
-        description: flow === 'self_service'
-          ? "Self-service rental payment"
-          : "30% deposit for rental request",
-        metadata: {
-          flow,
-          checkout_session_id: sessionId,
-          setup_intent_id: setupIntentId,
-          dropoff_date: dropoffDateStr || ''
-        }
-      });
-    } catch (err) {
-      // Fallback: send a payment link (Checkout Session)
-      const paySession = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        payment_method_types: ['card'],
-        customer: customerId,
-        success_url: `${process.env.SITE_URL || ''}/?deposit=paid`,
-        cancel_url: `${process.env.SITE_URL || ''}/?deposit=cancelled`,
-        line_items: [{
-          price_data: {
-            currency: 'usd',
-            product_data: { name: flow === 'self_service' ? 'Self-service rental payment' : 'Deposit (30%)' },
-            unit_amount: depositCents
-          },
-          quantity: 1
-        }],
-        metadata: {
-          flow,
-          checkout_session_id: sessionId,
-          setup_intent_id: setupIntentId,
-          dropoff_date: dropoffDateStr || ''
-        }
-      });
-
-      await sendEmailDepositPaymentLink({
-        to: customerEmail,
-        customerName,
-        depositCents,
-        paymentUrl: paySession.url
-      });
-
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json', ...cors },
-        body: JSON.stringify({
-          success: false,
-          message: 'Deposit charge failed; payment link emailed',
-          payment_url: paySession.url
-        })
-      };
+      await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
+    } catch {
+      // ignore if already attached
     }
+    await stripe.customers.update(customerId, {
+      invoice_settings: { default_payment_method: paymentMethodId }
+    });
 
-    // If self-serve, we are done (no invoice)
-    let invoiceId = null;
+    // Charge now (deposit or full)
+    const chargeDescription = payInFullNow
+      ? 'Rental payment (paid in full)'
+      : '30% deposit for rental request';
 
-    if (flow !== 'self_service' && balanceCents > 0) {
-      // Build invoice items for FULL total, then subtract deposit as a negative line item.
-      const invoiceItems = [];
-
-      const addLine = (label, cents) => {
-        const n = Number(cents || 0);
-        if (!Number.isFinite(n) || n === 0) return;
-        invoiceItems.push({ label, cents: n });
-      };
-
-      addLine('Rental items', md.products_subtotal_cents);
-      addLine('Delivery fee', md.delivery_cents);
-      addLine('Manhattan surcharge', md.congestion_cents);
-      addLine('Rush fee', md.rush_cents);
-      addLine('Drop-off time slot', md.dropoff_timeslot_cents);
-      addLine('Pickup time slot', md.pickup_timeslot_cents);
-      addLine('Extended rental', md.extended_cents);
-      addLine('Minimum order surcharge', md.min_order_cents);
-      addLine('Sales tax', md.tax_cents);
-
-
-// Create a draft invoice for the remaining balance and schedule autopay for the day before drop-off.
-// IMPORTANT: We do NOT email a "pay now" invoice link; we only auto-charge off-session on the scheduled date.
-if (balanceCents > 0) {
-  // One line item for remaining balance (keep editable by you until autopay runs)
-  await stripe.invoiceItems.create({
-    customer: customerId,
-    currency: 'usd',
-    amount: balanceCents,
-    description: 'Remaining balance'
-  });
-
-  // Schedule autopay: 2:00 PM UTC on the day before drop-off (≈ 9/10am in NY depending on DST)
-  // This avoids midnight edge cases and keeps the charge solidly on the "day before" date.
-  let autopayTs = null;
-  if (dropoffDateStr) {
-    const [yy, mm, dd] = dropoffDateStr.split('-').map((x) => parseInt(x, 10));
-    if (!Number.isNaN(yy) && !Number.isNaN(mm) && !Number.isNaN(dd)) {
-      const dropoffAtUtc = Date.UTC(yy, mm - 1, dd, 14, 0, 0); // 14:00 UTC on drop-off day
-      autopayTs = Math.floor((dropoffAtUtc - 24 * 60 * 60 * 1000) / 1000); // day before
-    }
-  }
-
-  // Create a draft invoice that will auto-finalize & auto-charge at autopayTs
-  const invoice = await stripe.invoices.create({
-    customer: customerId,
-    payment_settings: { payment_method_types: ['card'] },
-    collection_method: 'charge_automatically',
-    auto_advance: true,
-    ...(autopayTs ? { automatically_finalizes_at: autopayTs } : {}),
-    metadata: {
-      kraus_flow: 'full_service',
-      checkout_session_id: sessionId,
-      setup_intent_id: setupIntentId,
-      deposit_payment_intent_id: pi.id,
-      dropoff_date: dropoffDateStr || ''
-    }
-  });
-
-  invoiceId = invoice.id;
-}
-
-    // Notifications (optional)
-    const twilio = getTwilioClient();
-    if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
-      try {
-        await twilio.messages.create({
-          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged.`,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          to: customerPhone
-        });
-      } catch (e) {
-        console.warn('Twilio SMS failed:', e.message);
+    const pi = await stripe.paymentIntents.create({
+      amount: paidNowCents,
+      currency: 'usd',
+      customer: customerId,
+      payment_method: paymentMethodId,
+      off_session: true,
+      confirm: true,
+      description: chargeDescription,
+      metadata: {
+        flow,
+        checkout_session_id: sessionId,
+        setup_intent_id: setupIntentId,
+        dropoff_date: dropoffDateStr
       }
+    });
+
+    // Schedule remaining balance (draft invoice; no sending now)
+    let scheduledInvoiceId = null;
+    if (balanceCents > 0 && flow === 'full_service') {
+      if (!dropoffDateStr) {
+        throw new Error('Missing dropoff_date for scheduling remaining balance');
+      }
+
+      // Day before drop-off at 10:00 AM NY time
+      const dropoff = parseYYYYMMDD(dropoffDateStr);
+      const dayBefore = new Date(dropoff.getTime() - 24 * 60 * 60 * 1000);
+      const yyyy = dayBefore.getFullYear();
+      const mm = String(dayBefore.getMonth() + 1).padStart(2, '0');
+      const dd = String(dayBefore.getDate()).padStart(2, '0');
+      const dayBeforeStr = `${yyyy}-${mm}-${dd}`;
+      const finalizeAtUtc = nyLocalToUtc(dayBeforeStr, 10, 0);
+
+      // Create invoice item for the remaining balance
+      await stripe.invoiceItems.create({
+        customer: customerId,
+        currency: 'usd',
+        amount: balanceCents,
+        description: 'Remaining balance (auto-charged day before drop-off)',
+        metadata: {
+          flow,
+          checkout_session_id: sessionId,
+          dropoff_date: dropoffDateStr
+        }
+      });
+
+      const inv = await stripe.invoices.create({
+        customer: customerId,
+        collection_method: 'charge_automatically',
+        auto_advance: true,
+        automatically_finalizes_at: Math.floor(finalizeAtUtc.getTime() / 1000),
+        metadata: {
+          flow,
+          checkout_session_id: sessionId,
+          setup_intent_id: setupIntentId,
+          dropoff_date: dropoffDateStr,
+          autopay_scheduled_for: dayBeforeStr
+        }
+      });
+
+      scheduledInvoiceId = inv.id;
     }
 
+    // Customer email confirmation
     await sendEmailApproved({
       to: customerEmail,
       customerName,
-      depositCents,
+      paidNowCents,
       balanceCents,
-      dropoffDate: dropoffDateStr,
+      dropoffDateStr,
+      itemsSummary
     });
+
+    // Customer SMS (transactional; clarify replies not monitored)
+    if (customerPhone) {
+      const supportEmail = extractEmail(process.env.FROM_EMAIL);
+      const smsBody = [
+        "Your Kraus' Tables & Chairs request is approved.",
+        payInFullNow ? `Payment processed now: $${centsToDollars(paidNowCents)}.` : `Deposit charged: $${centsToDollars(paidNowCents)}.`,
+        balanceCents > 0 ? `Remaining balance: $${centsToDollars(balanceCents)} (auto-charged day before drop-off).` : 'Paid in full.',
+        'Automated text — replies are not monitored.',
+        `Questions? Email ${supportEmail}.`
+      ].join(' ');
+      await sendCustomerSms({ toPhone: customerPhone, body: smsBody });
+    }
+
+    // Owner SMS (optional)
+    if (process.env.OWNER_SMS_TO) {
+      const ownerBody = [
+        "Approved order:",
+        customerName || customerEmail || 'Unknown customer',
+        `Paid now: $${centsToDollars(paidNowCents)}`,
+        balanceCents > 0 ? `Remaining: $${centsToDollars(balanceCents)} (invoice ${scheduledInvoiceId || 'scheduled'})` : 'Paid in full',
+        dropoffDateStr ? `Drop-off: ${dropoffDateStr}` : ''
+      ].filter(Boolean).join(' | ');
+      await sendOwnerSms({ body: ownerBody });
+    }
 
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
-        success: true,
-        message: flow === 'self_service' ? 'Payment charged' : 'Deposit charged',
+        ok: true,
         payment_intent_id: pi.id,
-        invoice_id: invoiceId,
+        paid_now_cents: paidNowCents,
+        remaining_balance_cents: balanceCents,
+        scheduled_invoice_id: scheduledInvoiceId
       })
     };
-  } catch (error) {
-    console.error('Approve error:', error);
+  } catch (err) {
+    console.error('checkout-approve error:', err);
     return {
       statusCode: 500,
-      headers: cors,
-      body: JSON.stringify({ error: 'Failed to approve', details: error.message })
+      headers: { 'Content-Type': 'application/json', ...cors },
+      body: JSON.stringify({ error: err?.message || 'Internal error' })
     };
   }
 };
