@@ -34,6 +34,16 @@ function centsToDollars(cents) {
   return (n / 100).toFixed(2);
 }
 
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function parseYYYYMMDD(s) {
   if (!s || typeof s !== 'string') return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
@@ -49,27 +59,42 @@ function daysBetween(a, b) {
   return Math.floor((b.getTime() - a.getTime()) / ms);
 }
 
-async function sendEmailApproved({ to, customerName, depositCents, balanceCents, dropoffDate, invoiceHostedUrl }) {
+async function sendEmailApproved({ to, customerName, depositCents, balanceCents, dropoffDate }) {
   const resend = getResendClient();
   if (!resend || !process.env.FROM_EMAIL) return;
 
   const depositStr = `$${centsToDollars(depositCents)}`;
   const balanceStr = `$${centsToDollars(balanceCents)}`;
-  const invoiceLine = invoiceHostedUrl
-    ? `<p><a href="${invoiceHostedUrl}">Pay your remaining balance here</a>.</p>`
-    : `<p>Your remaining balance will be invoiced by email.</p>`;
+
+  let autopayDateStr = '';
+  if (dropoffDate) {
+    const [yy, mm, dd] = String(dropoffDate).split('-').map((x) => parseInt(x, 10));
+    if (!Number.isNaN(yy) && !Number.isNaN(mm) && !Number.isNaN(dd)) {
+      const d = new Date(Date.UTC(yy, mm - 1, dd));
+      d.setUTCDate(d.getUTCDate() - 1);
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      autopayDateStr = `${y}-${m}-${day}`;
+    }
+  }
+
+  const autopayLine = autopayDateStr
+    ? `We will automatically charge the remaining balance the day before your drop-off (${autopayDateStr}).`
+    : `We will automatically charge the remaining balance the day before your drop-off.`;
 
   await resend.emails.send({
     from: process.env.FROM_EMAIL,
     to,
     subject: "Your Kraus' Tables & Chairs request is approved",
     html: `
-      <p>Hi ${customerName || ''},</p>
+      <p>Hi ${escapeHtml(customerName || '')},</p>
       <p>Your request has been approved.</p>
       <p><strong>Deposit charged:</strong> ${depositStr}</p>
-      ${balanceCents > 0 ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDate ? ` (for drop-off ${dropoffDate})` : ''}</p>` : ''}
-      ${balanceCents > 0 ? invoiceLine : '<p>No remaining balance is due.</p>'}
-      <p>If you have any questions, just reply to this email.</p>
+      <p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDate ? ` (for drop-off ${escapeHtml(dropoffDate)})` : ''}</p>
+      <p>${escapeHtml(autopayLine)}</p>
+      <p>If you need to make changes, just reply to this email.</p>
+      <p>— Kraus' Tables & Chairs</p>
     `
   });
 }
@@ -227,7 +252,6 @@ exports.handler = async (event) => {
     }
 
     // If self-serve, we are done (no invoice)
-    let invoiceHostedUrl = null;
     let invoiceId = null;
 
     if (flow !== 'self_service' && balanceCents > 0) {
@@ -250,58 +274,47 @@ exports.handler = async (event) => {
       addLine('Minimum order surcharge', md.min_order_cents);
       addLine('Sales tax', md.tax_cents);
 
-      // Create invoice items
-      for (const it of invoiceItems) {
-        await stripe.invoiceItems.create({
-          customer: customerId,
-          currency: 'usd',
-          amount: it.cents,
-          description: it.label
-        });
-      }
 
-      // Negative line item for deposit already paid
-      await stripe.invoiceItems.create({
-        customer: customerId,
-        currency: 'usd',
-        amount: -depositCents,
-        description: 'Deposit paid'
-      });
+// Create a draft invoice for the remaining balance and schedule autopay for the day before drop-off.
+// IMPORTANT: We do NOT email a "pay now" invoice link; we only auto-charge off-session on the scheduled date.
+if (balanceCents > 0) {
+  // One line item for remaining balance (keep editable by you until autopay runs)
+  await stripe.invoiceItems.create({
+    customer: customerId,
+    currency: 'usd',
+    amount: balanceCents,
+    description: 'Remaining balance'
+  });
 
-      const shouldSendNow = daysUntilDropoff <= 7;
-
-      const invoice = await stripe.invoices.create({
-        customer: customerId,
-        payment_settings: { payment_method_types: ['card'] },
-        collection_method: 'send_invoice',
-        days_until_due: shouldSendNow ? 1 : 2,
-        auto_advance: shouldSendNow, // finalize automatically if sending now
-        metadata: {
-          kraus_flow: 'full_service',
-          checkout_session_id: sessionId,
-          setup_intent_id: setupIntentId,
-          deposit_payment_intent_id: pi.id,
-          dropoff_date: dropoffDateStr || '',
-          kraus_send_ts: (() => {
-            if (shouldSendNow) return String(Math.floor(Date.now() / 1000));
-            if (!dropoffDate) return '';
-            const sendDate = new Date(dropoffDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-            // send at 9am local-ish (server time)
-            sendDate.setHours(9, 0, 0, 0);
-            return String(Math.floor(sendDate.getTime() / 1000));
-          })()
-        }
-      });
-
-      invoiceId = invoice.id;
-
-      if (shouldSendNow) {
-        // Ensure finalized and sent
-        const finalized = invoice.status === 'draft' ? await stripe.invoices.finalizeInvoice(invoice.id) : invoice;
-        const sent = await stripe.invoices.sendInvoice(finalized.id);
-        invoiceHostedUrl = sent.hosted_invoice_url || null;
-      }
+  // Schedule autopay: 2:00 PM UTC on the day before drop-off (≈ 9/10am in NY depending on DST)
+  // This avoids midnight edge cases and keeps the charge solidly on the "day before" date.
+  let autopayTs = null;
+  if (dropoffDateStr) {
+    const [yy, mm, dd] = dropoffDateStr.split('-').map((x) => parseInt(x, 10));
+    if (!Number.isNaN(yy) && !Number.isNaN(mm) && !Number.isNaN(dd)) {
+      const dropoffAtUtc = Date.UTC(yy, mm - 1, dd, 14, 0, 0); // 14:00 UTC on drop-off day
+      autopayTs = Math.floor((dropoffAtUtc - 24 * 60 * 60 * 1000) / 1000); // day before
     }
+  }
+
+  // Create a draft invoice that will auto-finalize & auto-charge at autopayTs
+  const invoice = await stripe.invoices.create({
+    customer: customerId,
+    payment_settings: { payment_method_types: ['card'] },
+    collection_method: 'charge_automatically',
+    auto_advance: true,
+    ...(autopayTs ? { automatically_finalizes_at: autopayTs } : {}),
+    metadata: {
+      kraus_flow: 'full_service',
+      checkout_session_id: sessionId,
+      setup_intent_id: setupIntentId,
+      deposit_payment_intent_id: pi.id,
+      dropoff_date: dropoffDateStr || ''
+    }
+  });
+
+  invoiceId = invoice.id;
+}
 
     // Notifications (optional)
     const twilio = getTwilioClient();
@@ -327,7 +340,6 @@ Questions? Email ${supportEmail}.`,
       depositCents,
       balanceCents,
       dropoffDate: dropoffDateStr,
-      invoiceHostedUrl
     });
 
     return {
@@ -338,7 +350,6 @@ Questions? Email ${supportEmail}.`,
         message: flow === 'self_service' ? 'Payment charged' : 'Deposit charged',
         payment_intent_id: pi.id,
         invoice_id: invoiceId,
-        invoice_hosted_url: invoiceHostedUrl
       })
     };
   } catch (error) {
