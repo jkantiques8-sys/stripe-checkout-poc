@@ -319,10 +319,13 @@ exports.handler = async (event) => {
     });
 
     // Customer SMS (transactional; clarify replies not monitored)
+console.log('approve debug phone:', { customerPhone, metaPhone: session.metadata?.customer_phone, detailsPhone: session.customer_details?.phone });
     if (customerPhone) {
       const supportEmail = extractEmail(process.env.FROM_EMAIL);
       const smsBody = [
         "Your Kraus' Tables & Chairs request is approved. A confirmation has been sent to your email.",
+        payInFullNow ? `Payment processed now: $${centsToDollars(paidNowCents)}.` : `Deposit charged: $${centsToDollars(paidNowCents)}.`,
+        balanceCents > 0 ? `Remaining balance: $${centsToDollars(balanceCents)} (auto-charged day before drop-off).` : 'Paid in full.',
         'Automated text — replies are not monitored.',
         `Questions? Email ${supportEmail}.`
       ].join(' ');
