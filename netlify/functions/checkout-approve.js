@@ -318,19 +318,31 @@ exports.handler = async (event) => {
       itemsSummary
     });
 
-    // Customer SMS (transactional; clarify replies not monitored)
-console.log('approve debug phone:', { customerPhone, metaPhone: session.metadata?.customer_phone, detailsPhone: session.customer_details?.phone });
-    if (customerPhone) {
-      const supportEmail = extractEmail(process.env.FROM_EMAIL);
-      const smsBody = [
-        "Your Kraus' Tables & Chairs request is approved. A confirmation has been sent to your email.",
-        payInFullNow ? `Payment processed now: $${centsToDollars(paidNowCents)}.` : `Deposit charged: $${centsToDollars(paidNowCents)}.`,
-        balanceCents > 0 ? `Remaining balance: $${centsToDollars(balanceCents)} (auto-charged day before drop-off).` : 'Paid in full.',
-        'Automated text — replies are not monitored.',
-        `Questions? Email ${supportEmail}.`
-      ].join(' ');
-      await sendCustomerSms({ toPhone: customerPhone, body: smsBody });
-    }
+// Customer SMS (transactional; clarify replies not monitored)
+if (customerPhone) {
+  const supportEmail = extractEmail(process.env.FROM_EMAIL);
+  const smsBody = [
+    "Your Kraus’ Tables & Chairs request is approved. A confirmation has been sent to your email.",
+    payInFullNow ? `Payment processed now: $${centsToDollars(paidNowCents)}.` : `Deposit charged: $${centsToDollars(paidNowCents)}.`,
+    balanceCents > 0 ? `Remaining balance: $${centsToDollars(balanceCents)} (auto-charged day before drop-off).` : 'Paid in full.',
+    'Automated text — replies are not monitored.',
+    `Questions? Email ${supportEmail}.`,
+  ].join(' ');
+
+  try {
+    console.log('SMS: attempting send', { to: customerPhone });
+    await sendCustomerSms({ toPhone: customerPhone, body: smsBody });
+    console.log('SMS: sent OK', { to: customerPhone });
+  } catch (err) {
+    console.error('SMS: send failed', {
+      message: err?.message,
+      code: err?.code,
+      status: err?.status,
+      details: err?.details,
+    });
+  }
+}
+
 
     // Owner SMS (optional)
     if (process.env.OWNER_SMS_TO) {
