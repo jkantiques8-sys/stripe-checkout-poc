@@ -134,7 +134,6 @@ async function sendEmailApproved({
       <p>Your request has been approved.</p>
       <p><strong>Payment processed now:</strong> ${paidNowStr}</p>
       ${balanceLine}
-      ${itemsBlock}
       <p>If you have any questions, just reply to this email.</p>
     `
   });
