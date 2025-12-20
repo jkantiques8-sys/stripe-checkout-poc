@@ -1,20 +1,8 @@
 // netlify/functions/checkout-approve.js
-// Approves a request and charges either:
-//  - Full payment immediately for: self_service, same-day, next-day, or rush (<=2 days)
-//  - Otherwise: 30% deposit now + remaining balance auto-charged the day before drop-off
-//
-// Notes:
-// - Uses a saved card from Checkout (mode: setup).
-// - For non-rush full-service orders >= 2 days out, we create a Stripe *draft* invoice for the remaining balance.
-//   That invoice is set to auto-finalize (and auto-charge) at a scheduled timestamp (day before drop-off).
-// - You can edit invoice line items up until it finalizes (add/remove items), which matches your rental workflow.
-
 const Stripe = require('stripe');
 const jwt = require('jsonwebtoken');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
-
-const IS_TEST_MODE = String(process.env.STRIPE_SECRET_KEY || '').startsWith('sk_test');
 
 let twilioClient = null;
 let resendClient = null;
@@ -52,7 +40,6 @@ function parseYYYYMMDD(s) {
   if (!m) return null;
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   if (Number.isNaN(d.getTime())) return null;
-  d.setHours(0, 0, 0, 0);
   return d;
 }
 
@@ -62,100 +49,46 @@ function daysBetween(a, b) {
   return Math.floor((b.getTime() - a.getTime()) / ms);
 }
 
-/**
- * Returns a unix timestamp (seconds) for when the remaining balance should auto-charge:
- * "day before drop-off, late morning New York time-ish"
- *
- * We intentionally keep this simple: schedule at 15:00 UTC (≈ 10am ET winter / 11am ET summer).
- */
-function computeAutoPayTimestamp(dropoffDate) {
-  if (!dropoffDate) return null;
-  const d = new Date(dropoffDate.getTime() - 24 * 60 * 60 * 1000); // day before
-  d.setUTCHours(15, 0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
-}
-
-function formatDatePretty(iso) {
-  if (!iso) return '';
-  const d = new Date(iso + 'T00:00:00');
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-async function sendEmailApproved({
-  to,
-  customerName,
-  flow,
-  paidNowCents,
-  remainingCents,
-  dropoffDateStr,
-  autoPayTs,
-  invoiceId
-}) {
+async function sendEmailApproved({ to, customerName, depositCents, balanceCents, dropoffDate, invoiceHostedUrl }) {
   const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL || !to) return;
+  if (!resend || !process.env.FROM_EMAIL) return;
 
-  const paidNowStr = `$${centsToDollars(paidNowCents)}`;
-
-  const isPaidInFull = !remainingCents || Number(remainingCents) <= 0;
-  const remainingStr = `$${centsToDollars(remainingCents)}`;
-
-  const dropoffPretty = dropoffDateStr ? formatDatePretty(dropoffDateStr) : '';
-  const autoPayDatePretty = autoPayTs
-    ? new Date(autoPayTs * 1000).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })
-    : '';
-
-  const subject = "Your Kraus’ Tables & Chairs request is approved";
-
-  const html = `
-    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
-      <p>Hi ${customerName || ''},</p>
-      <p>Your request has been approved.</p>
-
-      <p><strong>Payment processed now:</strong> ${paidNowStr}</p>
-
-      ${
-        isPaidInFull
-          ? `<p><strong>Remaining balance:</strong> $0.00 (paid in full)</p>`
-          : `
-            <p><strong>Remaining balance:</strong> ${remainingStr}${dropoffPretty ? ` (for drop-off ${dropoffPretty})` : ''}</p>
-            <p>
-              We will automatically charge the remaining balance
-              <strong>the day before your drop-off${autoPayDatePretty ? ` (${autoPayDatePretty})` : ''}</strong>.
-              If you need to make changes, reply to this email any time before then.
-            </p>
-            ${invoiceId ? `<p style="color:#555;font-size:12px;margin-top:12px;">(Internal ref: ${invoiceId})</p>` : ''}
-          `
-      }
-
-      <p>If you have any questions, just reply to this email.</p>
-      <p style="margin-top:18px;">– Kraus’ Tables &amp; Chairs</p>
-    </div>
-  `;
+  const depositStr = `$${centsToDollars(depositCents)}`;
+  const balanceStr = `$${centsToDollars(balanceCents)}`;
+  const invoiceLine = invoiceHostedUrl
+    ? `<p><a href="${invoiceHostedUrl}">Pay your remaining balance here</a>.</p>`
+    : `<p>Your remaining balance will be invoiced by email.</p>`;
 
   await resend.emails.send({
     from: process.env.FROM_EMAIL,
     to,
-    subject,
-    html
+    subject: "Your Kraus' Tables & Chairs request is approved",
+    html: `
+      <p>Hi ${customerName || ''},</p>
+      <p>Your request has been approved.</p>
+      <p><strong>Deposit charged:</strong> ${depositStr}</p>
+      ${balanceCents > 0 ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDate ? ` (for drop-off ${dropoffDate})` : ''}</p>` : ''}
+      ${balanceCents > 0 ? invoiceLine : '<p>No remaining balance is due.</p>'}
+      <p>If you have any questions, just reply to this email.</p>
+    `
   });
 }
 
-async function sendEmailPaymentLink({ to, customerName, amountCents, reasonLabel, paymentUrl }) {
+async function sendEmailDepositPaymentLink({ to, customerName, depositCents, paymentUrl }) {
   const resend = getResendClient();
-  if (!resend || !process.env.FROM_EMAIL || !to) return;
+  if (!resend || !process.env.FROM_EMAIL) return;
 
-  const amountStr = `$${centsToDollars(amountCents)}`;
+  const depositStr = `$${centsToDollars(depositCents)}`;
 
   await resend.emails.send({
     from: process.env.FROM_EMAIL,
     to,
-    subject: `Action needed: ${reasonLabel}`,
+    subject: "Action needed: confirm your deposit",
     html: `
       <p>Hi ${customerName || ''},</p>
-      <p>We weren’t able to charge your card automatically.</p>
-      <p><strong>Amount due:</strong> ${amountStr}</p>
-      <p><a href="${paymentUrl}">Pay here</a></p>
+      <p>Your request has been approved, but we couldn’t charge your deposit automatically.</p>
+      <p><strong>Deposit due:</strong> ${depositStr}</p>
+      <p><a href="${paymentUrl}">Pay the deposit here</a>.</p>
       <p>If you need help, reply to this email.</p>
     `
   });
@@ -166,64 +99,37 @@ exports.handler = async (event) => {
     return { statusCode: 204, headers: cors };
   }
 
-  // IMPORTANT: Your approve link is clicked from an email, so it will be a GET.
-  // We support GET and POST.
-  if (event.httpMethod !== 'GET' && event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: { 'Content-Type': 'application/json', ...cors },
-      body: JSON.stringify({ error: 'Method not allowed' })
-    };
-  }
-
   try {
     const qsToken = event.queryStringParameters && event.queryStringParameters.token;
     let bodyToken = null;
-    if (event.body) {
-      try {
-        bodyToken = JSON.parse(event.body).token;
-      } catch {}
-    }
+    if (event.body) { try { bodyToken = JSON.parse(event.body).token; } catch {} }
     const token = qsToken || bodyToken;
 
-    // Optional test-only override: schedule autopay in N minutes (Stripe test mode only).
-    // Use by adding ?test_autopay_minutes=3 to your approve URL (ONLY works with sk_test keys).
-    const testAutopayMinutesRaw =
-      (event.queryStringParameters &&
-        (event.queryStringParameters.test_autopay_minutes || event.queryStringParameters.testAutopayMinutes)) ||
-      null;
-    let testAutopayMinutes = null;
-    if (testAutopayMinutesRaw != null) {
-      const n = Number(testAutopayMinutesRaw);
-      if (Number.isFinite(n) && n >= 1 && n <= 60) testAutopayMinutes = Math.floor(n);
-    }
-
     if (!token) {
-      return { statusCode: 400, headers: { 'Content-Type': 'application/json', ...cors }, body: JSON.stringify({ error: 'Token is required' }) };
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Token is required' }) };
     }
 
     const JWT_SECRET = process.env.JWT_SECRET;
     if (!JWT_SECRET) {
-      return { statusCode: 500, headers: { 'Content-Type': 'application/json', ...cors }, body: JSON.stringify({ error: 'Missing JWT_SECRET' }) };
+      return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Missing JWT_SECRET' }) };
     }
 
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
     } catch (e) {
-      return { statusCode: 401, headers: { 'Content-Type': 'application/json', ...cors }, body: JSON.stringify({ error: 'Invalid or expired token' }) };
+      return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
     const setupIntentId = decoded.setupIntentId;
     const sessionId = decoded.sessionId;
-
     const customerName = decoded.customerName || '';
     const customerEmail = decoded.customerEmail || '';
     const customerPhone = decoded.customerPhone || '';
     const flow = decoded.orderDetails?.flow || 'full_service';
 
     if (!setupIntentId || !sessionId) {
-      return { statusCode: 400, headers: { 'Content-Type': 'application/json', ...cors }, body: JSON.stringify({ error: 'Missing setupIntentId or sessionId in token' }) };
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId or sessionId in token' }) };
     }
 
     // Retrieve session metadata (pricing + schedule)
@@ -232,108 +138,80 @@ exports.handler = async (event) => {
 
     const totalCents = Number(md.total_cents || decoded.orderDetails?.total_cents || 0);
     if (!Number.isFinite(totalCents) || totalCents <= 0) {
-      return { statusCode: 400, headers: { 'Content-Type': 'application/json', ...cors }, body: JSON.stringify({ error: 'Missing or invalid total_cents' }) };
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing or invalid total_cents' }) };
     }
 
     const dropoffDateStr = md.dropoff_date || decoded.orderDetails?.dropoff_date || '';
     const dropoffDate = parseYYYYMMDD(dropoffDateStr);
-
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
     const daysUntilDropoff = dropoffDate ? daysBetween(today, dropoffDate) : 999;
-
-    const rushCents = Number(md.rush_cents || 0) || 0;
-    const isRush = rushCents > 0; // checkout-full defines rush if within 2 days
 
     // Retrieve setup intent to find saved payment method + customer
     const si = await stripe.setupIntents.retrieve(setupIntentId);
     const customerId = si.customer || decoded.customerId || session.customer;
-    const paymentMethodId = si.payment_method || decoded.paymentMethodId || null;
+    const paymentMethodId = si.payment_method;
 
     if (!customerId || !paymentMethodId) {
       return {
         statusCode: 409,
-        headers: { 'Content-Type': 'application/json', ...cors },
+        headers: cors,
         body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' })
       };
     }
 
-    // --- Decision: full pay now vs deposit now ---
-    // Policy:
-    // - self_service: pay in full now
-    // - same-day / next-day (daysUntilDropoff <= 1): pay in full now
-    // - rush (within 2 days): pay in full now
-    // - otherwise: 30% deposit now, remaining auto-charged day before drop-off
-    const payInFullNow =
-      flow === 'self_service' ||
-      daysUntilDropoff <= 1 ||
-      isRush;
+    // Determine charge now: full-service = 30% deposit; self-serve = 100%
+    const depositPercent = flow === 'self_service' ? 1.0 : 0.30;
+    const depositCents = Math.max(0, Math.round(totalCents * depositPercent));
+    const balanceCents = Math.max(0, totalCents - depositCents);
 
-    const depositPercent = payInFullNow ? 1.0 : 0.30;
-    const paidNowCents = Math.max(0, Math.round(totalCents * depositPercent));
-    const remainingCents = Math.max(0, totalCents - paidNowCents);
-
-    // --- Charge now (off-session) ---
+    // Charge deposit/full amount off-session
     let pi;
     try {
-      pi = await stripe.paymentIntents.create(
-        {
-          amount: paidNowCents,
-          currency: 'usd',
-          customer: customerId,
-          payment_method: paymentMethodId,
-          off_session: true,
-          confirm: true,
-          description: payInFullNow
-            ? (flow === 'self_service' ? 'Self-service rental payment' : 'Rental payment (paid in full)')
-            : '30% deposit for rental request',
-          metadata: {
-            flow,
-            checkout_session_id: sessionId,
-            setup_intent_id: setupIntentId,
-            dropoff_date: dropoffDateStr || '',
-            kraus_paid_in_full: payInFullNow ? 'true' : 'false'
-          }
-        },
-        { idempotencyKey: `approve_pi_${sessionId}_${paidNowCents}` }
-      );
+      pi = await stripe.paymentIntents.create({
+        amount: depositCents,
+        currency: 'usd',
+        customer: customerId,
+        payment_method: paymentMethodId,
+        off_session: true,
+        confirm: true,
+        description: flow === 'self_service'
+          ? "Self-service rental payment"
+          : "30% deposit for rental request",
+        metadata: {
+          flow,
+          checkout_session_id: sessionId,
+          setup_intent_id: setupIntentId,
+          dropoff_date: dropoffDateStr || ''
+        }
+      });
     } catch (err) {
-      // Fallback: send a one-time payment link
-      const paySession = await stripe.checkout.sessions.create(
-        {
-          mode: 'payment',
-          payment_method_types: ['card'],
-          customer: customerId,
-          success_url: `${process.env.SITE_URL || ''}/?payment=paid`,
-          cancel_url: `${process.env.SITE_URL || ''}/?payment=cancelled`,
-          line_items: [
-            {
-              price_data: {
-                currency: 'usd',
-                product_data: {
-                  name: payInFullNow ? 'Rental payment' : 'Deposit (30%)'
-                },
-                unit_amount: paidNowCents
-              },
-              quantity: 1
-            }
-          ],
-          metadata: {
-            flow,
-            checkout_session_id: sessionId,
-            setup_intent_id: setupIntentId,
-            dropoff_date: dropoffDateStr || ''
-          }
-        },
-        { idempotencyKey: `approve_paylink_${sessionId}_${paidNowCents}` }
-      );
+      // Fallback: send a payment link (Checkout Session)
+      const paySession = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        payment_method_types: ['card'],
+        customer: customerId,
+        success_url: `${process.env.SITE_URL || ''}/?deposit=paid`,
+        cancel_url: `${process.env.SITE_URL || ''}/?deposit=cancelled`,
+        line_items: [{
+          price_data: {
+            currency: 'usd',
+            product_data: { name: flow === 'self_service' ? 'Self-service rental payment' : 'Deposit (30%)' },
+            unit_amount: depositCents
+          },
+          quantity: 1
+        }],
+        metadata: {
+          flow,
+          checkout_session_id: sessionId,
+          setup_intent_id: setupIntentId,
+          dropoff_date: dropoffDateStr || ''
+        }
+      });
 
-      await sendEmailPaymentLink({
+      await sendEmailDepositPaymentLink({
         to: customerEmail,
         customerName,
-        amountCents: paidNowCents,
-        reasonLabel: payInFullNow ? 'Complete your payment' : 'Confirm your deposit',
+        depositCents,
         paymentUrl: paySession.url
       });
 
@@ -342,92 +220,100 @@ exports.handler = async (event) => {
         headers: { 'Content-Type': 'application/json', ...cors },
         body: JSON.stringify({
           success: false,
-          message: 'Auto-charge failed; payment link emailed',
+          message: 'Deposit charge failed; payment link emailed',
           payment_url: paySession.url
         })
       };
     }
 
-    // --- For full-service deposits: create a draft invoice for the remaining balance and schedule auto-finalize/pay ---
+    // If self-serve, we are done (no invoice)
+    let invoiceHostedUrl = null;
     let invoiceId = null;
-    let autoPayTs = null;
 
-    if (!payInFullNow && flow !== 'self_service' && remainingCents > 0 && dropoffDate) {
-      autoPayTs = computeAutoPayTimestamp(dropoffDate);
+    if (flow !== 'self_service' && balanceCents > 0) {
+      // Build invoice items for FULL total, then subtract deposit as a negative line item.
+      const invoiceItems = [];
 
-      if (IS_TEST_MODE && testAutopayMinutes) {
-        autoPayTs = Math.floor(Date.now() / 1000) + testAutopayMinutes * 60;
+      const addLine = (label, cents) => {
+        const n = Number(cents || 0);
+        if (!Number.isFinite(n) || n === 0) return;
+        invoiceItems.push({ label, cents: n });
+      };
+
+      addLine('Rental items', md.products_subtotal_cents);
+      addLine('Delivery fee', md.delivery_cents);
+      addLine('Manhattan surcharge', md.congestion_cents);
+      addLine('Rush fee', md.rush_cents);
+      addLine('Drop-off time slot', md.dropoff_timeslot_cents);
+      addLine('Pickup time slot', md.pickup_timeslot_cents);
+      addLine('Extended rental', md.extended_cents);
+      addLine('Minimum order surcharge', md.min_order_cents);
+      addLine('Sales tax', md.tax_cents);
+
+      // Create invoice items
+      for (const it of invoiceItems) {
+        await stripe.invoiceItems.create({
+          customer: customerId,
+          currency: 'usd',
+          amount: it.cents,
+          description: it.label
+        });
       }
 
-      // Create the draft invoice first (exclude any existing pending invoice items on the customer)
-      const invoice = await stripe.invoices.create(
-        {
-          customer: customerId,
-          collection_method: 'charge_automatically',
-          auto_advance: true,
-          automatically_finalizes_at: autoPayTs, // Stripe will finalize at this time, then attempt payment
-          pending_invoice_items_behavior: 'exclude',
-          payment_settings: { payment_method_types: ['card'] },
-          metadata: {
-            kraus_flow: 'full_service',
-            kraus_type: 'remaining_balance',
-            checkout_session_id: sessionId,
-            setup_intent_id: setupIntentId,
-            deposit_payment_intent_id: pi.id,
-            dropoff_date: dropoffDateStr || '',
-            kraus_autopay_ts: String(autoPayTs),
-            kraus_test_autopay_minutes: IS_TEST_MODE && testAutopayMinutes ? String(testAutopayMinutes) : '',
-            kraus_total_cents: String(totalCents),
-            kraus_deposit_cents: String(paidNowCents),
-            kraus_remaining_cents: String(remainingCents)
-          }
-        },
-        { idempotencyKey: `approve_inv_${sessionId}_${remainingCents}` }
-      );
+      // Negative line item for deposit already paid
+      await stripe.invoiceItems.create({
+        customer: customerId,
+        currency: 'usd',
+        amount: -depositCents,
+        description: 'Deposit paid'
+      });
+
+      const shouldSendNow = daysUntilDropoff <= 7;
+
+      const invoice = await stripe.invoices.create({
+        customer: customerId,
+        payment_settings: { payment_method_types: ['card'] },
+        collection_method: 'send_invoice',
+        days_until_due: shouldSendNow ? 1 : 2,
+        auto_advance: shouldSendNow, // finalize automatically if sending now
+        metadata: {
+          kraus_flow: 'full_service',
+          checkout_session_id: sessionId,
+          setup_intent_id: setupIntentId,
+          deposit_payment_intent_id: pi.id,
+          dropoff_date: dropoffDateStr || '',
+          kraus_send_ts: (() => {
+            if (shouldSendNow) return String(Math.floor(Date.now() / 1000));
+            if (!dropoffDate) return '';
+            const sendDate = new Date(dropoffDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+            // send at 9am local-ish (server time)
+            sendDate.setHours(9, 0, 0, 0);
+            return String(Math.floor(sendDate.getTime() / 1000));
+          })()
+        }
+      });
 
       invoiceId = invoice.id;
 
-      // Attach invoice line items directly to THIS invoice (so they're editable before finalization)
-      const addLine = async (label, cents) => {
-        const n = Number(cents || 0);
-        if (!Number.isFinite(n) || n === 0) return;
-        await stripe.invoiceItems.create({
-          customer: customerId,
-          invoice: invoiceId,
-          currency: 'usd',
-          amount: n,
-          description: label
-        });
-      };
-
-      await addLine('Rental items', md.products_subtotal_cents);
-      await addLine('Delivery fee', md.delivery_cents);
-      await addLine('Manhattan surcharge', md.congestion_cents);
-      await addLine('Rush fee', md.rush_cents);
-      await addLine('Drop-off time slot', md.dropoff_timeslot_cents);
-      await addLine('Pickup time slot', md.pickup_timeslot_cents);
-      await addLine('Extended rental', md.extended_cents);
-      await addLine('Minimum order surcharge', md.min_order_cents);
-      await addLine('Sales tax', md.tax_cents);
-
-      // Credit line item for deposit already paid
-      await stripe.invoiceItems.create({
-        customer: customerId,
-        invoice: invoiceId,
-        currency: 'usd',
-        amount: -paidNowCents,
-        description: 'Deposit paid'
-      });
+      if (shouldSendNow) {
+        // Ensure finalized and sent
+        const finalized = invoice.status === 'draft' ? await stripe.invoices.finalizeInvoice(invoice.id) : invoice;
+        const sent = await stripe.invoices.sendInvoice(finalized.id);
+        invoiceHostedUrl = sent.hosted_invoice_url || null;
+      }
     }
 
-    // Optional SMS notification
+    // Notifications (optional)
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
+        const supportEmail = process.env.FROM_EMAIL || 'orders@kraustables.com';
         await twilio.messages.create({
-          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${
-            payInFullNow ? 'Payment has been charged in full.' : 'Your 30% deposit has been charged.'
-          }`,
+          body: `Your Kraus’ Tables & Chairs request is approved.
+          A confirmation has been sent to your email.
+
+          Automated text — replies are not monitored.
+          Questions? Email ${supportEmail}.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
@@ -436,36 +322,31 @@ exports.handler = async (event) => {
       }
     }
 
-    // Email customer confirmation
     await sendEmailApproved({
       to: customerEmail,
       customerName,
-      flow,
-      paidNowCents,
-      remainingCents,
-      dropoffDateStr,
-      autoPayTs,
-      invoiceId
+      depositCents,
+      balanceCents,
+      dropoffDate: dropoffDateStr,
+      invoiceHostedUrl
     });
 
-    // Response (JSON) — for browser clicks this will just render JSON; that's fine for now.
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
         success: true,
-        pay_in_full_now: payInFullNow,
-        days_until_dropoff: daysUntilDropoff,
+        message: flow === 'self_service' ? 'Payment charged' : 'Deposit charged',
         payment_intent_id: pi.id,
         invoice_id: invoiceId,
-        autopay_ts: autoPayTs
+        invoice_hosted_url: invoiceHostedUrl
       })
     };
   } catch (error) {
     console.error('Approve error:', error);
     return {
       statusCode: 500,
-      headers: { 'Content-Type': 'application/json', ...cors },
+      headers: cors,
       body: JSON.stringify({ error: 'Failed to approve', details: error.message })
     };
   }
