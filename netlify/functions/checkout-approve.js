@@ -320,12 +320,8 @@ if (balanceCents > 0) {
     const twilio = getTwilioClient();
     if (twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
       try {
-        const supportEmail = process.env.FROM_EMAIL || 'orders@kraustables.com';
         await twilio.messages.create({
-          body: `Your Kraus’ Tables & Chairs request is approved.
-
-Automated text — replies aren’t monitored.
-Questions? Email ${supportEmail}.`,
+          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged.`,
           from: process.env.TWILIO_PHONE_NUMBER,
           to: customerPhone
         });
