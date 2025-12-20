@@ -393,11 +393,12 @@ const buildCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-  <strong>Your card has not been charged—this is an authorization only.</strong>  
+  <strong>Your card has not been charged yet.</strong>
 </p>
 
 <p>
-  We will only capture payment after your request is approved. We usually approve requests withing 2 business hours. If clarification is needed or additional charges apply, we will call you before proceeding.
+  After we approve your request, we’ll charge a <strong>30% deposit</strong> and then automatically charge the remaining balance <strong>the day before your drop-off</strong>.
+  (For rush orders within 2 days, payment is charged in full at approval.)
 </p>
 
 <p>
@@ -548,7 +549,7 @@ const buildSelfCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-  <strong>Your card has not been charged—this is an authorization only.</strong>  
+  <strong>Your card has not been charged yet.</strong>
   We’ll call you within 2 hours to review your request and finalize your pickup plan:
 </p>
 
@@ -558,7 +559,7 @@ const buildSelfCustomerEmailHtml = (details) => {
 </ul>
 
 <p>
-  Once your request is approved and all details are confirmed, we will capture payment.  
+  Once your request is approved and all details are confirmed, we will charge your card in full.
 </p>
 
 <p>
