@@ -322,9 +322,7 @@ exports.handler = async (event) => {
     if (customerPhone) {
       const supportEmail = extractEmail(process.env.FROM_EMAIL);
       const smsBody = [
-        "Your Kraus' Tables & Chairs request is approved.",
-        payInFullNow ? `Payment processed now: $${centsToDollars(paidNowCents)}.` : `Deposit charged: $${centsToDollars(paidNowCents)}.`,
-        balanceCents > 0 ? `Remaining balance: $${centsToDollars(balanceCents)} (auto-charged day before drop-off).` : 'Paid in full.',
+        "Your Kraus' Tables & Chairs request is approved. A confirmation has been sent to your email.",
         'Automated text — replies are not monitored.',
         `Questions? Email ${supportEmail}.`
       ].join(' ');
