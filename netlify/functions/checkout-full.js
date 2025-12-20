@@ -279,7 +279,7 @@ exports.handler = async (event) => {
       custom_text: {
         submit: {
           message:
-            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
+            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll either charge the full amount for last‑minute/rush orders, or charge a 30% deposit and automatically charge the remaining balance the day before drop‑off."
         }
       },
       metadata: {
