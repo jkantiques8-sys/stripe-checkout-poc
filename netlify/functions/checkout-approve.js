@@ -94,13 +94,6 @@ function nyLocalToUtc(yyyyMmDd, hour24 = 10, minute = 0) {
   return new Date(base.getTime() - offsetMin * 60 * 1000);
 }
 
-function extractEmail(fromEmailEnv) {
-  // Accept either "orders@..." or "Name <orders@...>"
-  const s = String(fromEmailEnv || '').trim();
-  const m = /<([^>]+)>/.exec(s);
-  return (m ? m[1] : s) || 'orders@kraustables.com';
-}
-
 async function sendEmailApproved({
   to,
   customerName,
@@ -134,6 +127,7 @@ async function sendEmailApproved({
       <p>Your request has been approved.</p>
       <p><strong>Payment processed now:</strong> ${paidNowStr}</p>
       ${balanceLine}
+      ${itemsBlock}
       <p>If you have any questions, just reply to this email.</p>
     `
   });
@@ -146,14 +140,6 @@ async function sendOwnerSms({ body }) {
   const from = process.env.TWILIO_FROM_NUMBER;
   if (!to || !from) return;
   await client.messages.create({ to, from, body });
-}
-
-async function sendCustomerSms({ toPhone, body }) {
-  const client = getTwilioClient();
-  if (!client) return;
-  const from = process.env.TWILIO_FROM_NUMBER;
-  if (!toPhone || !from) return;
-  await client.messages.create({ to: toPhone, from, body });
 }
 
 exports.handler = async (event) => {
@@ -268,6 +254,9 @@ exports.handler = async (event) => {
       if (!dropoffDateStr) {
         throw new Error('Missing dropoff_date for scheduling remaining balance');
       }
+      if (!Number.isFinite(balanceCents) || balanceCents <= 0 || !Number.isInteger(balanceCents)) {
+        throw new Error(`Invalid balanceCents for invoice scheduling: ${balanceCents}`);
+      }
 
       // --- AUTOPAY SCHEDULING ---
       // Default behavior: charge the remaining balance by auto-finalizing an invoice
@@ -279,7 +268,6 @@ exports.handler = async (event) => {
       const testMinutesRaw = process.env.AUTOPAY_TEST_MINUTES;
       const testMinutes = testMinutesRaw ? parseInt(testMinutesRaw, 10) : null;
 
-      let dayBeforeStr = null;     // YYYY-MM-DD (only used in default mode)
       let finalizeAtUtc = null;    // Date object in UTC
       let autopayLabel = null;     // Human-readable marker saved in metadata
 
@@ -292,7 +280,7 @@ exports.handler = async (event) => {
         const yyyy = dayBefore.getFullYear();
         const mm = String(dayBefore.getMonth() + 1).padStart(2, '0');
         const dd = String(dayBefore.getDate()).padStart(2, '0');
-        dayBeforeStr = `${yyyy}-${mm}-${dd}`;
+        const dayBeforeStr = `${yyyy}-${mm}-${dd}`;
         finalizeAtUtc = nyLocalToUtc(dayBeforeStr, 10, 0);
         autopayLabel = dayBeforeStr;
       }
@@ -302,19 +290,8 @@ exports.handler = async (event) => {
           ? `Remaining balance (TEST auto-charge in ${testMinutes} min)`
           : 'Remaining balance (auto-charged day before drop-off)';
 
-      // Create invoice item for the remaining balance
-      await stripe.invoiceItems.create({
-        customer: customerId,
-        currency: 'usd',
-        amount: balanceCents,
-        description: remainingBalanceDescription,
-        metadata: {
-          flow,
-          checkout_session_id: sessionId,
-          dropoff_date: dropoffDateStr
-        }
-      });
-
+      // ✅ FIX: Create the invoice FIRST, then attach the invoice item directly to it.
+      // This guarantees the invoice total is non-zero and will be charged on finalize.
       const inv = await stripe.invoices.create({
         customer: customerId,
         collection_method: 'charge_automatically',
@@ -326,6 +303,19 @@ exports.handler = async (event) => {
           setup_intent_id: setupIntentId,
           dropoff_date: dropoffDateStr,
           autopay_scheduled_for: autopayLabel
+        }
+      });
+
+      await stripe.invoiceItems.create({
+        customer: customerId,
+        invoice: inv.id, // ✅ attach to THIS invoice (fixes $0 invoices)
+        currency: 'usd',
+        amount: balanceCents, // integer cents
+        description: remainingBalanceDescription,
+        metadata: {
+          flow,
+          checkout_session_id: sessionId,
+          dropoff_date: dropoffDateStr
         }
       });
 
@@ -341,24 +331,6 @@ exports.handler = async (event) => {
       dropoffDateStr,
       itemsSummary
     });
-
-    // Notifications (optional)
-    const twilio = getTwilioClient();
-    const ENABLE_CUSTOMER_SMS = process.env.ENABLE_CUSTOMER_SMS === 'true';
-
-    if (ENABLE_CUSTOMER_SMS && twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
-      try {
-        await twilio.messages.create({
-          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged. Automated text—replies not monitored. Email us if needed.`,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          to: customerPhone
-        });
-      } catch (e) {
-        console.warn('Twilio SMS failed:', e.message);
-      }
-    }
-
-
 
     // Owner SMS (optional)
     if (process.env.OWNER_SMS_TO) {
