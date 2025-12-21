@@ -399,23 +399,34 @@ const buildCustomerEmailHtml = (details) => {
 <p>Hi ${details.customerName || 'there'},</p>
 
 <p>
-  Thank you for submitting your <strong>full-service rental request</strong> with 
-  Kraus’ Tables &amp; Chairs. We’ve received your information and are reviewing 
-  availability, logistics, and delivery requirements.
+	Thank you for submitting your <strong>full-service rental request</strong> with Kraus’ Tables & Chairs. We’ve received your details and are reviewing availability, delivery logistics, and access requirements for your location.
 </p>
 
 <p>
-  <strong>Your card has not been charged—this is an authorization only.</strong>  
+	<strong>Your card has been authorized, but not yet charged.</strong>
 </p>
 
 <p>
-  We will only capture payment after your request is approved. We usually approve requests withing 2 business hours. If clarification is needed or additional charges apply, we will call you before proceeding.
+	Once your request is approved:
+</p>
+
+<ul>
+	<li>For standard orders, we’ll charge a <strong>30% deposit</strong>.
+	</li>
+	<li>For last-minute or rush orders, payment will be <strong>charged in full</strong>.
+	</li>
+</ul>
+
+<p>
+	For standard orders, the remaining balance is <strong>automatically charged the day before drop-off</strong>.
 </p>
 
 <p>
-  Need to make changes? Just reply to this email.
+	We typically confirm full-service requests within <strong>2 business hours</strong>. If we need to clarify any details, we’ll contact you before proceeding.
 </p>
-
+<p>
+	Need to make changes? Just reply to this email and we’ll take care of it.
+</p>
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
       <strong>Drop-off:</strong> ${schedule.dropoff}<br />
