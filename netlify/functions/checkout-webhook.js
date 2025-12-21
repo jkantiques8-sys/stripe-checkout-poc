@@ -263,7 +263,7 @@ const buildOrderSummaryRows = (details) => {
 
   addRowIfPositive('Delivery fee', details.deliveryFeeNumber);
   addRowIfPositive('Rush fee', details.rushFeeNumber);
-  addRowIfPositive('Drop-off time slot fee', details.dropoffTimeslotFeeNumber);
+  addRowIfPositive('Delivery time slot fee', details.dropoffTimeslotFeeNumber);
   addRowIfPositive('Pickup time slot fee', details.pickupTimeslotFeeNumber);
   addRowIfPositive('Extended rental fee', details.extendedFeeNumber);
   addRowIfPositive('Minimum surcharge', details.minOrderFeeNumber);
@@ -323,7 +323,7 @@ const buildOwnerEmailHtml = (details, approveUrl, declineUrl) => {
 
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
-      <strong>Drop-off:</strong> ${schedule.dropoff}<br />
+      <strong>Delivery:</strong> ${schedule.dropoff}<br />
       <strong>Pickup:</strong> ${schedule.pickup}${
         schedule.extraLabel
           ? `<br /><strong>Extra Days:</strong> ${schedule.extraLabel}`
@@ -418,7 +418,7 @@ const buildCustomerEmailHtml = (details) => {
 </ul>
 
 <p>
-	For standard orders, the remaining balance is <strong>automatically charged the day before drop-off</strong>.
+	For standard orders, the remaining balance is <strong>automatically charged the day before delivery</strong>.
 </p>
 
 <p>
@@ -433,7 +433,7 @@ const buildCustomerEmailHtml = (details) => {
 </p>
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
-      <strong>Drop-off:</strong> ${schedule.dropoff}<br />
+      <strong>Delivery:</strong> ${schedule.dropoff}<br />
       <strong>Pickup:</strong> ${schedule.pickup}${
         schedule.extraLabel
           ? `<br /><strong>Extra Days:</strong> ${schedule.extraLabel}`
@@ -642,7 +642,7 @@ const buildOwnerSms = (details) => {
     `🚚 New DELIVERY order ${formatMoney(details.totalNumber)} – ${
       details.customerName || 'New customer'
     }\n` +
-    `Drop-off: ${schedule.dropoff}\n` +
+    `Delivery: ${schedule.dropoff}\n` +
     `Pickup: ${schedule.pickup}\n` +
     (schedule.extraLabel ? `Extra: ${schedule.extraLabel}\n` : '')
   );
