@@ -269,21 +269,45 @@ exports.handler = async (event) => {
         throw new Error('Missing dropoff_date for scheduling remaining balance');
       }
 
-      // Day before drop-off at 10:00 AM NY time
-      const dropoff = parseYYYYMMDD(dropoffDateStr);
-      const dayBefore = new Date(dropoff.getTime() - 24 * 60 * 60 * 1000);
-      const yyyy = dayBefore.getFullYear();
-      const mm = String(dayBefore.getMonth() + 1).padStart(2, '0');
-      const dd = String(dayBefore.getDate()).padStart(2, '0');
-      const dayBeforeStr = `${yyyy}-${mm}-${dd}`;
-      const finalizeAtUtc = nyLocalToUtc(dayBeforeStr, 10, 0);
+      // --- AUTOPAY SCHEDULING ---
+      // Default behavior: charge the remaining balance by auto-finalizing an invoice
+      // the day before drop-off at 10:00 AM America/New_York.
+      //
+      // TESTING override:
+      //   Set AUTOPAY_TEST_MINUTES to an integer (e.g. "5") to schedule the charge
+      //   a few minutes after approval. Remove/unset the env var to switch back.
+      const testMinutesRaw = process.env.AUTOPAY_TEST_MINUTES;
+      const testMinutes = testMinutesRaw ? parseInt(testMinutesRaw, 10) : null;
+
+      let dayBeforeStr = null;     // YYYY-MM-DD (only used in default mode)
+      let finalizeAtUtc = null;    // Date object in UTC
+      let autopayLabel = null;     // Human-readable marker saved in metadata
+
+      if (Number.isFinite(testMinutes) && testMinutes > 0) {
+        finalizeAtUtc = new Date(Date.now() + testMinutes * 60 * 1000);
+        autopayLabel = `TEST:+${testMinutes}min`;
+      } else {
+        const dropoff = parseYYYYMMDD(dropoffDateStr);
+        const dayBefore = new Date(dropoff.getTime() - 24 * 60 * 60 * 1000);
+        const yyyy = dayBefore.getFullYear();
+        const mm = String(dayBefore.getMonth() + 1).padStart(2, '0');
+        const dd = String(dayBefore.getDate()).padStart(2, '0');
+        dayBeforeStr = `${yyyy}-${mm}-${dd}`;
+        finalizeAtUtc = nyLocalToUtc(dayBeforeStr, 10, 0);
+        autopayLabel = dayBeforeStr;
+      }
+
+      const remainingBalanceDescription =
+        (Number.isFinite(testMinutes) && testMinutes > 0)
+          ? `Remaining balance (TEST auto-charge in ${testMinutes} min)`
+          : 'Remaining balance (auto-charged day before drop-off)';
 
       // Create invoice item for the remaining balance
       await stripe.invoiceItems.create({
         customer: customerId,
         currency: 'usd',
         amount: balanceCents,
-        description: 'Remaining balance (auto-charged day before drop-off)',
+        description: remainingBalanceDescription,
         metadata: {
           flow,
           checkout_session_id: sessionId,
@@ -301,7 +325,7 @@ exports.handler = async (event) => {
           checkout_session_id: sessionId,
           setup_intent_id: setupIntentId,
           dropoff_date: dropoffDateStr,
-          autopay_scheduled_for: dayBeforeStr
+          autopay_scheduled_for: autopayLabel
         }
       });
 
