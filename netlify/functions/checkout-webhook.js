@@ -422,7 +422,7 @@ const buildCustomerEmailHtml = (details) => {
 </p>
 
 <p>
-	We typically confirm full-service requests within <strong>2 business hours</strong>. If we need to clarify any details, we’ll contact you before proceeding.
+	We typically confirm full-service requests within <strong>2 business hours</strong>. If we need to clarify any <strong>access or logistics details</strong>, we’ll contact you before proceeding.
 </p>
 <p>
 	Need to make changes? Just reply to this email and we’ll take care of it.
