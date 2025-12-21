@@ -422,6 +422,10 @@ const buildCustomerEmailHtml = (details) => {
 </p>
 
 <p>
+  <strong>Important policy reminder:</strong> Full-service cancellations must be made 7–30 days in advance, depending on order size, to be eligible for a refund.
+</p>
+
+<p>
 	We typically confirm full-service requests within <strong>2 business hours</strong>. If we need to clarify any <strong>access or logistics details</strong>, we’ll contact you before proceeding.
 </p>
 <p>
