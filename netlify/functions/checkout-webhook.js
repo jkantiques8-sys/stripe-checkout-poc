@@ -394,7 +394,6 @@ const buildCustomerEmailHtml = (details) => {
   return `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
 
-  <h2 style="margin:0 0 16px;font-size:20px;">Request Received – Pending Approval</h2>
 
 <p>Hi ${details.customerName || 'there'},</p>
 
@@ -1051,8 +1050,8 @@ const orderDetails = {
       : buildOwnerEmailHtml(orderDetails, approveUrl, declineUrl);
     
     const customerSubject = isSelfServiceFlow
-      ? 'Self Service Request Received – Pending Confirmation'
-      : 'Full Service Request Received – Pending Confirmation';
+      ? 'Request Received – Pending Approval'
+      : 'Request Received – Pending Approval';
     
     const customerHtml = isSelfServiceFlow
       ? buildSelfCustomerEmailHtml(orderDetails)
