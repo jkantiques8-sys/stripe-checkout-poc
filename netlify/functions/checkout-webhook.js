@@ -394,21 +394,40 @@ const buildCustomerEmailHtml = (details) => {
   return `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
 
+  <h2 style="margin:0 0 16px;font-size:20px;">Request Received – Pending Confirmation</h2>
 
 <p>Hi ${details.customerName || 'there'},</p>
 
 <p>
-	Thank you for submitting your rental request with Kraus’ Tables & Chairs. We’ve received your details and are reviewing availability, delivery logistics, and access requirements for your location.
+	Thank you for submitting your <strong>full-service rental request</strong> with Kraus’ Tables & Chairs. We’ve received your details and are reviewing availability, delivery logistics, and access requirements for your location.
+</p>
+
+<p>
+	<strong>Your card has been authorized, but not yet charged.</strong>
+</p>
+
+<p>
+	Once your request is approved:
+</p>
+
+<ul>
+	<li>For standard orders, we’ll charge a <strong>30% deposit</strong>.
+	</li>
+	<li>For last-minute or rush orders, payment will be <strong>charged in full</strong>.
+	</li>
+</ul>
+
+<p>
+	For standard orders, the remaining balance is <strong>automatically charged the day before delivery</strong>.
+</p>
+
+<p>
+  <strong>Important policy reminder:</strong> Full-service cancellations must be made 7–30 days in advance, depending on order size, to be eligible for a refund.
 </p>
 
 <p>
 	We typically confirm full-service requests within <strong>2 business hours</strong>. If we need to clarify any <strong>access or logistics details</strong>, we’ll contact you before proceeding.
 </p>
-
-<p>
-  <strong>Important policy reminder:</strong> Cancellations must be made 7–30 days in advance, depending on order size.
-</p>
-
 <p>
 	Need to make changes? Just reply to this email and we’ll take care of it.
 </p>
@@ -973,9 +992,13 @@ const orderDetails = {
   }
 
   const tokenPayload = {
+    // Full-service approvals use setupIntentId + sessionId (existing behavior)
+    // Self-service approvals use paymentIntentId (manual capture) + flow='self_service'
     setupIntentId,
     customerId,
     paymentMethodId,
+    paymentIntentId: session.payment_intent || null,
+    flow: metadata.flow || 'full_service',
     customerName: orderDetails.customerName,
     customerEmail: orderDetails.customerEmail,
     customerPhone: orderDetails.customerPhone,
@@ -1050,8 +1073,8 @@ const orderDetails = {
       : buildOwnerEmailHtml(orderDetails, approveUrl, declineUrl);
     
     const customerSubject = isSelfServiceFlow
-      ? 'Request Received – Pending Approval'
-      : 'Request Received – Pending Approval';
+      ? 'Self Service Request Received – Pending Confirmation'
+      : 'Full Service Request Received – Pending Confirmation';
     
     const customerHtml = isSelfServiceFlow
       ? buildSelfCustomerEmailHtml(orderDetails)
