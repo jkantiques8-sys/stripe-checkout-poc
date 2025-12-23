@@ -208,6 +208,34 @@ const formatPhoneNumber = (value) => {
   return value;
 };
 
+// Retrieve Stripe Checkout line items and map them into our {name, qty, unit, total} shape.
+// This is especially important for self-service, where the session metadata does not include
+// a JSON-encoded items list.
+const getSessionLineItems = async (sessionId) => {
+  try {
+    const res = await stripe.checkout.sessions.listLineItems(sessionId, {
+      limit: 100
+    });
+
+    const data = Array.isArray(res?.data) ? res.data : [];
+    return data.map((li) => {
+      const qty = Number(li.quantity || 0);
+      const unitCents = Number(li.price?.unit_amount ?? 0);
+      const unit = centsToNumber(unitCents);
+      const total = unit !== null ? unit * qty : null;
+      return {
+        name: li.description || li.price?.product?.name || 'Item',
+        qty,
+        unit,
+        total
+      };
+    });
+  } catch (e) {
+    console.warn('Failed to retrieve session line items:', e?.message || String(e));
+    return [];
+  }
+};
+
 const buildItemsHtml = (items) => {
   if (!items || !items.length) return '';
 
@@ -394,21 +422,40 @@ const buildCustomerEmailHtml = (details) => {
   return `
   <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.6;">
 
+  <h2 style="margin:0 0 16px;font-size:20px;">Request Received – Pending Confirmation</h2>
 
 <p>Hi ${details.customerName || 'there'},</p>
 
 <p>
-	Thank you for submitting your rental request with Kraus’ Tables & Chairs. We’ve received your details and are reviewing availability, delivery logistics, and access requirements for your location.
+	Thank you for submitting your <strong>full-service rental request</strong> with Kraus’ Tables & Chairs. We’ve received your details and are reviewing availability, delivery logistics, and access requirements for your location.
+</p>
+
+<p>
+	<strong>Your card has been authorized, but not yet charged.</strong>
+</p>
+
+<p>
+	Once your request is approved:
+</p>
+
+<ul>
+	<li>For standard orders, we’ll charge a <strong>30% deposit</strong>.
+	</li>
+	<li>For last-minute or rush orders, payment will be <strong>charged in full</strong>.
+	</li>
+</ul>
+
+<p>
+	For standard orders, the remaining balance is <strong>automatically charged the day before delivery</strong>.
+</p>
+
+<p>
+  <strong>Important policy reminder:</strong> Full-service cancellations must be made 7–30 days in advance, depending on order size, to be eligible for a refund.
 </p>
 
 <p>
 	We typically confirm full-service requests within <strong>2 business hours</strong>. If we need to clarify any <strong>access or logistics details</strong>, we’ll contact you before proceeding.
 </p>
-
-<p>
-  <strong>Important policy reminder:</strong> Cancellations must be made 7–30 days in advance, depending on order size.
-</p>
-
 <p>
 	Need to make changes? Just reply to this email and we’ll take care of it.
 </p>
@@ -544,9 +591,12 @@ const buildSelfOwnerEmailHtml = (details, approveUrl, declineUrl) => {
 
 const buildSelfCustomerEmailHtml = (details) => {
   const schedule = summarizeSelfSchedule(details);
+  const items = details.items || [];
+  const itemsHtml = buildItemsHtml(items);
 
   return `
   <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;color:#432F28;line-height:1.5;">
+<h2 style="margin:0 0 16px;font-size:20px;">Request Received – Pending Confirmation</h2>
 
 <p>Hi ${details.customerName || 'there'},</p>
 
@@ -593,6 +643,8 @@ const buildSelfCustomerEmailHtml = (details) => {
         ${buildOrderSummaryRows(details)}
       </tbody>
     </table>
+
+    ${itemsHtml}
 
     <p style="margin-top:16px;">
       We’ll confirm your order within 2 business hours. Your card will
@@ -683,12 +735,14 @@ exports.handler = async (event, context) => {
     stripeEvent.id
   );
 
-  // We handle two events:
-  //  - checkout.session.completed (for setup-mode requests)
-  //  - invoice.paid (send confirmation to customer + owner)
+  // We handle:
+  //  - checkout.session.completed (request received: owner + customer)
+  //  - invoice.paid (full-service autopay remainder / invoices)
+  //  - payment_intent.succeeded (self-service capture after approval)
   if (
     stripeEvent.type !== 'checkout.session.completed' &&
-    stripeEvent.type !== 'invoice.paid'
+    stripeEvent.type !== 'invoice.paid' &&
+    stripeEvent.type !== 'payment_intent.succeeded'
   ) {
     return { statusCode: 200, body: JSON.stringify({ received: true }) };
   }
@@ -790,6 +844,152 @@ if ((Number(invoice.total ?? invoice.amount_due ?? 0) === 0) && (Number(invoice.
   }
 
   // ---------------------------------------------------------------------
+  // PAYMENT INTENT SUCCEEDED (SELF-SERVICE APPROVED / CAPTURED)
+  // ---------------------------------------------------------------------
+  if (stripeEvent.type === 'payment_intent.succeeded') {
+    const pi = stripeEvent.data.object;
+
+    // Find the Checkout Session associated with this PaymentIntent.
+    // (Stripe emits this event on capture for manual-capture intents.)
+    let sessionForPi = null;
+    try {
+      const list = await stripe.checkout.sessions.list({
+        payment_intent: pi.id,
+        limit: 1
+      });
+      sessionForPi = Array.isArray(list?.data) && list.data.length ? list.data[0] : null;
+    } catch (e) {
+      console.warn('payment_intent.succeeded: failed to list checkout sessions for PI:', e?.message || String(e));
+    }
+
+    if (!sessionForPi) {
+      console.log('payment_intent.succeeded: no checkout session found; skipping emails', { pi_id: pi.id });
+      return { statusCode: 200, body: JSON.stringify({ received: true }) };
+    }
+
+    const md = sessionForPi.metadata || {};
+    const flowForPi = md.flow || (md.chairs_subtotal_cents ? 'self_service' : 'full_service');
+    if (flowForPi !== 'self_service') {
+      // Only send "approved" emails for self-service captures.
+      return { statusCode: 200, body: JSON.stringify({ received: true }) };
+    }
+
+    const customerDetailsForPi = sessionForPi.customer_details || {};
+    const customerEmailForPi =
+      customerDetailsForPi.email || md.customer_email || md.email || sessionForPi.customer_email || null;
+
+    const orderDetailsForPi = {
+      flow: 'self_service',
+      customerName: md.customer_name || md.name || customerDetailsForPi.name || 'Not provided',
+      customerEmail: customerEmailForPi || 'Not provided',
+      customerPhone: md.customer_phone || md.phone || customerDetailsForPi.phone || null,
+
+      // schedule
+      pickupDate: md.pickup_date || null,
+      returnDate: md.return_date || null,
+      extraDays: md.ext_days || null,
+
+      // self-service chair counts
+      selfQtyDark: md.qty_dark ? Number(md.qty_dark) : null,
+      selfQtyLight: md.qty_light ? Number(md.qty_light) : null,
+
+      // financials
+      subtotalNumber: centsToNumber(md.chairs_subtotal_cents),
+      deliveryFeeNumber: null,
+      rushFeeNumber: centsToNumber(md.rush_cents),
+      taxNumber: centsToNumber(md.tax_cents),
+      dropoffTimeslotFeeNumber: null,
+      pickupTimeslotFeeNumber: null,
+      extendedFeeNumber: centsToNumber(md.ext_fee_cents),
+      minOrderFeeNumber: centsToNumber(md.min_cents),
+      totalNumber: centsToNumber(md.total_cents) ?? centsToNumber(sessionForPi.amount_total) ?? 0,
+
+      items: await getSessionLineItems(sessionForPi.id)
+    };
+
+    const schedule = summarizeSelfSchedule(orderDetailsForPi);
+    const itemsHtml = buildItemsHtml(orderDetailsForPi.items || []);
+
+    const approvedCustomerSubject = '✅ Your self-service request is approved – Kraus’ Tables & Chairs';
+    const approvedCustomerHtml = `
+      <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;color:#432F28;line-height:1.5;">
+        <h2 style="margin:0 0 16px;font-size:20px;">Request Approved</h2>
+        <p>Hi ${orderDetailsForPi.customerName || 'there'},</p>
+        <p>
+          Good news — your <strong>self-service chair rental</strong> request has been approved and your payment has been captured.
+        </p>
+
+        <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
+        <p style="margin:0 0 4px;"><strong>Pickup:</strong> ${schedule.pickup}</p>
+        <p style="margin:0 0 4px;"><strong>Return:</strong> ${schedule.returnDate}</p>
+        ${schedule.extraLabel ? `<p style="margin:0 0 4px;"><strong>Extended rental:</strong> ${schedule.extraLabel}</p>` : ''}
+
+        ${itemsHtml}
+
+        <h3 style="margin:24px 0 8px;font-size:15px;">Order Summary</h3>
+        <table cellspacing="0" cellpadding="0" style="font-size:14px;">
+          <tbody>
+            ${buildOrderSummaryRows(orderDetailsForPi)}
+          </tbody>
+        </table>
+
+        <p style="margin-top:16px;">
+          We’ll follow up shortly with pickup instructions (lockbox details / driver handoff) if needed.
+          If you have any questions or need to adjust your pickup plan, reply to this email.
+        </p>
+
+        <p style="margin-top:16px;">
+          <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
+        </p>
+
+        <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
+      </div>
+    `;
+
+    const resendEnabled = !!resend && !!FROM_EMAIL;
+    if (resendEnabled) {
+      // Owner heads-up (optional, but useful)
+      try {
+        await resend.emails.send({
+          from: FROM_EMAIL,
+          to: OWNER_EMAIL,
+          subject: '✅ Self-service payment captured',
+          html: `<div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.6;">
+            <p>Self-service order payment captured.</p>
+            <p style="margin:0;"><strong>Customer:</strong> ${orderDetailsForPi.customerName || 'Unknown'}<br/>
+            <strong>Pickup:</strong> ${schedule.pickup}<br/>
+            <strong>Return:</strong> ${schedule.returnDate}<br/>
+            <strong>Total:</strong> ${formatMoney(orderDetailsForPi.totalNumber)}</p>
+            ${itemsHtml}
+          </div>`
+        });
+      } catch (e) {
+        console.error('payment_intent.succeeded: failed sending owner captured email:', e?.message || String(e));
+      }
+
+      if (customerEmailForPi) {
+        try {
+          await resend.emails.send({
+            from: FROM_EMAIL,
+            to: customerEmailForPi,
+            subject: approvedCustomerSubject,
+            html: approvedCustomerHtml
+          });
+          console.log('payment_intent.succeeded: approved email sent to self-service customer');
+        } catch (e) {
+          console.error('payment_intent.succeeded: failed sending approved email to customer:', e?.message || String(e));
+        }
+      } else {
+        console.warn('payment_intent.succeeded: no customer email; skipping approved email');
+      }
+    } else {
+      console.log('Resend not configured, skipping payment_intent.succeeded emails');
+    }
+
+    return { statusCode: 200, body: JSON.stringify({ received: true }) };
+  }
+
+  // ---------------------------------------------------------------------
   // CHECKOUT SESSION COMPLETED (SETUP MODE)
   // ---------------------------------------------------------------------
 
@@ -858,7 +1058,13 @@ const totalNumber =
   centsToNumber(session.amount_total) ??
   0;
 
-const items = decodeItems(metadata.items);
+let items = decodeItems(metadata.items);
+
+// Self-service sessions don't embed an items JSON list in metadata.
+// Pull line items directly from Stripe so the "request received" email includes the chair lines.
+if ((!items || items.length === 0) && isSelfService) {
+  items = await getSessionLineItems(session.id);
+}
 
 const orderDetails = {
   flow,
@@ -923,7 +1129,6 @@ const orderDetails = {
   // ---- Ensure we have a customer and a reusable payment method -----------
   let customerId = session.customer || null;
   let setupIntentId = session.setup_intent || null;
-  let paymentIntentId = session.payment_intent || null;
   let paymentMethodId = null;
 
   try {
@@ -974,9 +1179,9 @@ const orderDetails = {
 
   const tokenPayload = {
     setupIntentId,
+    paymentIntentId: session.payment_intent || null,
     customerId,
     paymentMethodId,
-    paymentIntentId,
     customerName: orderDetails.customerName,
     customerEmail: orderDetails.customerEmail,
     customerPhone: orderDetails.customerPhone,
@@ -985,7 +1190,7 @@ const orderDetails = {
       total_cents: metadata.total_cents || '',
       dropoff_date: metadata.dropoff_date || '',
       flow: metadata.flow || 'full_service',
-      payment_intent_id: paymentIntentId || ''
+      payment_intent_id: session.payment_intent || null
     },
     sessionId: session.id
   };
@@ -1052,8 +1257,8 @@ const orderDetails = {
       : buildOwnerEmailHtml(orderDetails, approveUrl, declineUrl);
     
     const customerSubject = isSelfServiceFlow
-      ? 'Request Received – Pending Approval'
-      : 'Request Received – Pending Approval';
+      ? 'Self Service Request Received – Pending Confirmation'
+      : 'Full Service Request Received – Pending Confirmation';
     
     const customerHtml = isSelfServiceFlow
       ? buildSelfCustomerEmailHtml(orderDetails)
