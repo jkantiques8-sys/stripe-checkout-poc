@@ -1148,21 +1148,35 @@ const orderDetails = {
   }
 
   const tokenPayload = {
+    // Primary identifiers (checkout-approve relies on these)
     setupIntentId,
+    sessionId: session.id,
+
+    // Backward/forward compatible aliases (in case other functions expect different keys)
+    setup_intent: setupIntentId,
+    setup_intent_id: setupIntentId,
+    checkoutSessionId: session.id,
+    session_id: session.id,
+
+    // PaymentIntent (present for payment-mode or when a PI exists)
     paymentIntentId: session.payment_intent || null,
+    payment_intent: session.payment_intent || null,
+    payment_intent_id: session.payment_intent || null,
+
     customerId,
     paymentMethodId,
+
     customerName: orderDetails.customerName,
     customerEmail: orderDetails.customerEmail,
     customerPhone: orderDetails.customerPhone,
+
     orderDetails: {
       total: orderDetails.totalNumber,
       total_cents: metadata.total_cents || '',
       dropoff_date: metadata.dropoff_date || '',
-      flow: metadata.flow || 'full_service',
+      flow: flow || metadata.flow || (metadata.chairs_subtotal_cents ? 'self_service' : 'full_service'),
       payment_intent_id: session.payment_intent || null
-    },
-    sessionId: session.id
+    }
   };
 
   const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '24h' });
