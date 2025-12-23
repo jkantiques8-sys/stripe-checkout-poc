@@ -626,15 +626,6 @@ const buildSelfCustomerEmailHtml = (details) => {
     ${itemsHtml}
 
     <p style="margin-top:16px;">
-      We’ll confirm your order within 2 business hours. Your card will
-      <strong>not be charged</strong> until we call to confirm your pickup and return times.
-    </p>
-
-    <p style="margin-top:16px;">
-      If you have questions or need to make changes, just reply to this email.
-    </p>
-
-    <p style="margin-top:16px;">
       <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
     </p>
 
