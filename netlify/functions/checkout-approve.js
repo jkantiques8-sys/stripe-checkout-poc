@@ -162,7 +162,9 @@ exports.handler = async (event) => {
   }
 
   try {
-    const qsToken = event.queryStringParameters?.token;
+    const qs = event.queryStringParameters || {};
+    // Support multiple query param names (older links may use ?t=)
+    const qsToken = qs.token || qs.t;
     let bodyToken = null;
     if (event.body) {
       try { bodyToken = JSON.parse(event.body).token; } catch {}
@@ -185,19 +187,60 @@ exports.handler = async (event) => {
       return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
-    const setupIntentId = decoded.setupIntentId;
-    const sessionId = decoded.sessionId;
+    const pick = (obj, keys) => {
+      for (const k of keys) {
+        if (obj && obj[k]) return obj[k];
+      }
+      return null;
+    };
+
+    // Token payload can vary across webhook versions/flows; accept multiple aliases.
+    const sessionId = pick(decoded, [
+      'sessionId',
+      'session_id',
+      'checkoutSessionId',
+      'checkout_session_id',
+      'cs'
+    ]) || pick(decoded.orderDetails, [
+      'sessionId',
+      'session_id',
+      'checkoutSessionId',
+      'checkout_session_id',
+      'cs'
+    ]);
+
+    let setupIntentId = pick(decoded, [
+      'setupIntentId',
+      'setup_intent',
+      'setup_intent_id',
+      'si'
+    ]) || pick(decoded.orderDetails, [
+      'setupIntentId',
+      'setup_intent',
+      'setup_intent_id',
+      'si'
+    ]);
     const customerName = decoded.customerName || '';
     const customerEmail = decoded.customerEmail || '';
     const customerPhone = decoded.customerPhone || '';
     const flow = decoded.orderDetails?.flow || 'full_service';
 
-    if (!setupIntentId || !sessionId) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId or sessionId in token' }) };
+    if (!sessionId) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing sessionId in token' }) };
     }
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     const md = session.metadata || {};
+
+    // For some flows (esp. self-serve) the SetupIntent may not be embedded in the JWT,
+    // but it *is* available on the Checkout Session.
+    if (!setupIntentId) {
+      setupIntentId = session.setup_intent || md.setup_intent_id || md.setupIntentId || null;
+    }
+
+    if (!setupIntentId) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId (not present in token or session)' }) };
+    }
 
     const totalCents = Number(md.total_cents || decoded.orderDetails?.total_cents || 0);
     if (!Number.isFinite(totalCents) || totalCents <= 0) {
