@@ -162,9 +162,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const qs = event.queryStringParameters || {};
-    // Support multiple query param names (older links may use ?t=)
-    const qsToken = qs.token || qs.t;
+    const qsToken = event.queryStringParameters?.token;
     let bodyToken = null;
     if (event.body) {
       try { bodyToken = JSON.parse(event.body).token; } catch {}
@@ -187,60 +185,36 @@ exports.handler = async (event) => {
       return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
+    
     const pick = (obj, keys) => {
-      for (const k of keys) {
-        if (obj && obj[k]) return obj[k];
-      }
-      return null;
-    };
+          for (const k of keys) {
+            if (obj && obj[k]) return obj[k];
+          }
+          return null;
+        };
+    
+        const sessionId = pick(decoded, ['sessionId','session_id','checkoutSessionId','checkout_session_id','cs']);
+        const setupIntentIdFromToken = pick(decoded, ['setupIntentId','setup_intent','setup_intent_id','si']);
+        const paymentIntentIdFromToken = pick(decoded, ['paymentIntentId','payment_intent','payment_intent_id','pi']);
+        const customerName = decoded.customerName || '';
+        const customerEmail = decoded.customerEmail || '';
+        const customerPhone = decoded.customerPhone || '';
+        const flow = decoded.orderDetails?.flow || 'full_service';
+    
+        if (!sessionId) {
+          return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing sessionId in token' }) };
+        }
+    
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        const setupIntentId = setupIntentIdFromToken || session.setup_intent || null;
+        const paymentIntentId = paymentIntentIdFromToken || session.payment_intent || decoded.orderDetails?.payment_intent_id || null;
+    
+        if (!setupIntentId && !paymentIntentId) {
+          return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId (not present in token or session)' }) };
+        }
 
-    // Token payload can vary across webhook versions/flows; accept multiple aliases.
-    const sessionId = pick(decoded, [
-      'sessionId',
-      'session_id',
-      'checkoutSessionId',
-      'checkout_session_id',
-      'cs'
-    ]) || pick(decoded.orderDetails, [
-      'sessionId',
-      'session_id',
-      'checkoutSessionId',
-      'checkout_session_id',
-      'cs'
-    ]);
 
-    let setupIntentId = pick(decoded, [
-      'setupIntentId',
-      'setup_intent',
-      'setup_intent_id',
-      'si'
-    ]) || pick(decoded.orderDetails, [
-      'setupIntentId',
-      'setup_intent',
-      'setup_intent_id',
-      'si'
-    ]);
-    const customerName = decoded.customerName || '';
-    const customerEmail = decoded.customerEmail || '';
-    const customerPhone = decoded.customerPhone || '';
-    const flow = decoded.orderDetails?.flow || 'full_service';
-
-    if (!sessionId) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing sessionId in token' }) };
-    }
-
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
     const md = session.metadata || {};
-
-    // For some flows (esp. self-serve) the SetupIntent may not be embedded in the JWT,
-    // but it *is* available on the Checkout Session.
-    if (!setupIntentId) {
-      setupIntentId = session.setup_intent || md.setup_intent_id || md.setupIntentId || null;
-    }
-
-    if (!setupIntentId) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId (not present in token or session)' }) };
-    }
 
     const totalCents = Number(md.total_cents || decoded.orderDetails?.total_cents || 0);
     if (!Number.isFinite(totalCents) || totalCents <= 0) {
@@ -265,14 +239,47 @@ exports.handler = async (event) => {
 
     const itemsSummary = String(md.items_summary || '').trim();
 
-    // Retrieve setup intent to find saved payment method + customer
-    const si = await stripe.setupIntents.retrieve(setupIntentId);
-    const customerId = si.customer || decoded.customerId || session.customer;
-    const paymentMethodId = si.payment_method;
+    // Determine customer + payment method
+    let customerId = null;
+    let paymentMethodId = null;
+    let sourcePaymentIntentId = null;
+    const usingPaymentIntent = !!(!setupIntentId && paymentIntentId);
+
+    if (setupIntentId) {
+      // Setup-mode Checkout (authorization only)
+      const si = await stripe.setupIntents.retrieve(setupIntentId);
+      customerId = si.customer || decoded.customerId || session.customer;
+      paymentMethodId = si.payment_method || null;
+    } else {
+      // Payment-mode Checkout (often manual capture) – derive PM + customer from PaymentIntent
+      const piFromSession = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ['charges.data.payment_method'] });
+      sourcePaymentIntentId = piFromSession.id;
+      customerId = piFromSession.customer || decoded.customerId || session.customer || null;
+
+      // PaymentIntent.payment_method is usually set; fallback to first charge payment_method if needed
+      paymentMethodId =
+        piFromSession.payment_method ||
+        (piFromSession.charges && piFromSession.charges.data && piFromSession.charges.data[0] && piFromSession.charges.data[0].payment_method
+          ? (typeof piFromSession.charges.data[0].payment_method === 'string'
+              ? piFromSession.charges.data[0].payment_method
+              : piFromSession.charges.data[0].payment_method.id)
+          : null);
+    }
+
+    // If Checkout didn't create a customer (common), create one now so we can set defaults/invoice settings
+    if (!customerId) {
+      const created = await stripe.customers.create({
+        name: customerName || undefined,
+        email: customerEmail || undefined,
+        phone: customerPhone || undefined
+      });
+      customerId = created.id;
+    }
 
     if (!customerId || !paymentMethodId) {
-      return { statusCode: 409, headers: cors, body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' }) };
+      return { statusCode: 409, headers: cors, body: JSON.stringify({ error: 'Missing customer or payment method (from SetupIntent or PaymentIntent)' }) };
     }
+
 
     // Ensure the payment method is attached + set as default for invoices (so off-session charges work)
     try {
@@ -289,22 +296,34 @@ exports.handler = async (event) => {
       ? 'Rental payment (paid in full)'
       : '30% deposit for rental request';
 
-    const pi = await stripe.paymentIntents.create({
-      amount: paidNowCents,
-      currency: 'usd',
-      customer: customerId,
-      payment_method: paymentMethodId,
-      off_session: true,
-      confirm: true,
-      description: chargeDescription,
-      metadata: {
-        flow,
-        checkout_session_id: sessionId,
-        setup_intent_id: setupIntentId,
-        dropoff_date: dropoffDateStr
-      }
-    });
+    let pi;
 
+    // If self-serve used payment-mode Checkout with manual capture, capture that existing PaymentIntent instead
+    if (usingPaymentIntent && payInFullNow && sourcePaymentIntentId) {
+      const existing = await stripe.paymentIntents.retrieve(sourcePaymentIntentId);
+      if (existing.status === 'requires_capture') {
+        pi = await stripe.paymentIntents.capture(sourcePaymentIntentId);
+      } else {
+        // already captured/succeeded, or not capturable; treat as paid
+        pi = existing;
+      }
+    } else {
+      pi = await stripe.paymentIntents.create({
+        amount: paidNowCents,
+        currency: 'usd',
+        customer: customerId,
+        payment_method: paymentMethodId,
+        off_session: true,
+        confirm: true,
+        description: chargeDescription,
+        metadata: {
+          flow,
+          checkout_session_id: sessionId,
+          setup_intent_id: setupIntentId,
+          dropoff_date: dropoffDateStr
+        }
+      });
+    }
     // Schedule remaining balance (draft invoice; no sending now)
     let scheduledInvoiceId = null;
     if (balanceCents > 0 && flow === 'full_service') {
