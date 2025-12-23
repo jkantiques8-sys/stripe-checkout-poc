@@ -943,6 +943,7 @@ const orderDetails = {
   // ---- Ensure we have a customer and a reusable payment method -----------
   let customerId = session.customer || null;
   let setupIntentId = session.setup_intent || null;
+  let paymentIntentId = session.payment_intent || null;
   let paymentMethodId = null;
 
   try {
@@ -992,13 +993,10 @@ const orderDetails = {
   }
 
   const tokenPayload = {
-    // Full-service approvals use setupIntentId + sessionId (existing behavior)
-    // Self-service approvals use paymentIntentId (manual capture) + flow='self_service'
     setupIntentId,
+    paymentIntentId,
     customerId,
     paymentMethodId,
-    paymentIntentId: session.payment_intent || null,
-    flow: metadata.flow || 'full_service',
     customerName: orderDetails.customerName,
     customerEmail: orderDetails.customerEmail,
     customerPhone: orderDetails.customerPhone,
@@ -1006,7 +1004,8 @@ const orderDetails = {
       total: orderDetails.totalNumber,
       total_cents: metadata.total_cents || '',
       dropoff_date: metadata.dropoff_date || '',
-      flow: metadata.flow || 'full_service'
+      flow: metadata.flow || 'full_service',
+      payment_intent_id: paymentIntentId || ''
     },
     sessionId: session.id
   };
