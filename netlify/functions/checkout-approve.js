@@ -1,11 +1,7 @@
 // netlify/functions/checkout-approve.js
 // Approve an order:
-// - If rush (drop-off within 2 days per checkout-full metadata) OR same/next-day -> charge 100% now
-// - Else -> charge 30% now, schedule remaining balance to auto-charge the day before drop-off
-// Notes:
-// - Autopay is implemented by creating a draft invoice for the remaining balance with
-//   collection_method=charge_automatically and automatically_finalizes_at set to NY time.
-// - No "pay remaining balance" links are emailed.
+// - SELF SERVICE: capture the existing PaymentIntent from Checkout (authorization -> capture on approval)
+// - FULL SERVICE: charge deposit/full now via SetupIntent + optional autopay invoice for remaining balance
 
 const Stripe = require('stripe');
 const jwt = require('jsonwebtoken');
@@ -87,28 +83,12 @@ function nyOffsetMinutes(atDateUtc) {
 
 // Build a UTC Date for a specific local NY time on a YYYY-MM-DD day.
 function nyLocalToUtc(yyyyMmDd, hour24 = 10, minute = 0) {
-  // Start with a "naive" UTC date at the intended wall-clock time.
-  // Then adjust by NY offset for that instant.
   const base = new Date(`${yyyyMmDd}T${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`);
   const offsetMin = nyOffsetMinutes(base);
   return new Date(base.getTime() - offsetMin * 60 * 1000);
 }
 
-function extractEmail(fromEmailEnv) {
-  // Accept either "orders@..." or "Name <orders@...>"
-  const s = String(fromEmailEnv || '').trim();
-  const m = /<([^>]+)>/.exec(s);
-  return (m ? m[1] : s) || 'orders@kraustables.com';
-}
-
-async function sendEmailApproved({
-  to,
-  customerName,
-  paidNowCents,
-  balanceCents,
-  dropoffDateStr,
-  itemsSummary
-}) {
+async function sendEmailApproved({ to, customerName, paidNowCents, balanceCents, dropoffDateStr }) {
   const resend = getResendClient();
   const from = process.env.FROM_EMAIL;
   if (!resend || !from || !to) return;
@@ -120,10 +100,6 @@ async function sendEmailApproved({
     ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDateStr ? ` (for drop-off ${dropoffDateStr})` : ''}</p>
        <p>We will automatically charge the remaining balance the day before your drop-off.</p>`
     : `<p><strong>Remaining balance:</strong> $0.00 (paid in full)</p>`;
-
-  const itemsBlock = itemsSummary
-    ? `<p><strong>Requested items</strong></p><pre style="white-space:pre-wrap">${itemsSummary}</pre>`
-    : '';
 
   await resend.emails.send({
     from,
@@ -146,14 +122,6 @@ async function sendOwnerSms({ body }) {
   const from = process.env.TWILIO_FROM_NUMBER;
   if (!to || !from) return;
   await client.messages.create({ to, from, body });
-}
-
-async function sendCustomerSms({ toPhone, body }) {
-  const client = getTwilioClient();
-  if (!client) return;
-  const from = process.env.TWILIO_FROM_NUMBER;
-  if (!toPhone || !from) return;
-  await client.messages.create({ to: toPhone, from, body });
 }
 
 exports.handler = async (event) => {
@@ -185,40 +153,101 @@ exports.handler = async (event) => {
       return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Invalid or expired token' }) };
     }
 
-    
-    const pick = (obj, keys) => {
-          for (const k of keys) {
-            if (obj && obj[k]) return obj[k];
-          }
-          return null;
-        };
-    
-        const sessionId = pick(decoded, ['sessionId','session_id','checkoutSessionId','checkout_session_id','cs']);
-        const setupIntentIdFromToken = pick(decoded, ['setupIntentId','setup_intent','setup_intent_id','si']);
-        const paymentIntentIdFromToken = pick(decoded, ['paymentIntentId','payment_intent','payment_intent_id','pi']);
-        const customerName = decoded.customerName || '';
-        const customerEmail = decoded.customerEmail || '';
-        const customerPhone = decoded.customerPhone || '';
-        const flow = decoded.orderDetails?.flow || 'full_service';
-    
-        if (!sessionId) {
-          return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing sessionId in token' }) };
-        }
-    
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        const setupIntentId = setupIntentIdFromToken || session.setup_intent || null;
-        const paymentIntentId = paymentIntentIdFromToken || session.payment_intent || decoded.orderDetails?.payment_intent_id || null;
-    
-        if (!setupIntentId && !paymentIntentId) {
-          return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId (not present in token or session)' }) };
-        }
+    const sessionId = decoded.sessionId;
+    if (!sessionId) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing sessionId in token' }) };
+    }
 
+    const customerName = decoded.customerName || '';
+    const customerEmail = decoded.customerEmail || '';
+    const customerPhone = decoded.customerPhone || '';
 
+    // Always retrieve the session; we use it to determine flow + amounts safely
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
     const md = session.metadata || {};
 
-    const totalCents = Number(md.total_cents || decoded.orderDetails?.total_cents || 0);
+    // Flow: token wins, else checkout metadata wins, else default
+    const flow = decoded.orderDetails?.flow || md.flow || 'full_service';
+
+    // Total cents:
+    // - prefer metadata.total_cents
+    // - else token orderDetails.total_cents
+    // - else Stripe session.amount_total
+    const totalCents = Number(
+      md.total_cents ||
+      decoded.orderDetails?.total_cents ||
+      session.amount_total ||
+      0
+    );
+
     if (!Number.isFinite(totalCents) || totalCents <= 0) {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing or invalid total_cents' }) };
+    }
+
+    // -----------------------------
+    // SELF SERVICE: capture PI
+    // -----------------------------
+    if (flow === 'self_service') {
+      const paymentIntentId =
+        decoded.paymentIntentId ||
+        session.payment_intent ||
+        null;
+
+      if (!paymentIntentId) {
+        return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing paymentIntentId for self_service approval' }) };
+      }
+
+      const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+      // If the intent was authorized (manual capture), capture it now.
+      // If it's already succeeded, just treat as approved/paid.
+      if (pi.status === 'requires_capture') {
+        await stripe.paymentIntents.capture(paymentIntentId);
+      } else if (pi.status !== 'succeeded') {
+        return { statusCode: 409, headers: cors, body: JSON.stringify({ error: `PaymentIntent not capturable (status: ${pi.status})` }) };
+      }
+
+      // Use PI amount if present; fall back to totalCents
+      const paidNowCents = Number(pi.amount || totalCents);
+
+      // Email + optional owner SMS
+      await sendEmailApproved({
+        to: customerEmail,
+        customerName,
+        paidNowCents,
+        balanceCents: 0,
+        dropoffDateStr: ''
+      });
+
+      if (process.env.OWNER_SMS_TO) {
+        const ownerBody = [
+          "Approved SELF-SERVE order:",
+          customerName || customerEmail || 'Unknown customer',
+          `Paid now: $${centsToDollars(paidNowCents)}`,
+          `PI: ${paymentIntentId}`
+        ].filter(Boolean).join(' | ');
+        await sendOwnerSms({ body: ownerBody });
+      }
+
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json', ...cors },
+        body: JSON.stringify({
+          ok: true,
+          flow: 'self_service',
+          payment_intent_id: paymentIntentId,
+          paid_now_cents: paidNowCents,
+          remaining_balance_cents: 0
+        })
+      };
+    }
+
+    // -----------------------------
+    // FULL SERVICE: SetupIntent -> charge now + optional autopay invoice
+    // -----------------------------
+    const setupIntentId = decoded.setupIntentId || md.setup_intent_id || session.setup_intent || null;
+    if (!setupIntentId) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId (not present in token or session)' }) };
     }
 
     const dropoffDateStr = String(md.dropoff_date || decoded.orderDetails?.dropoff_date || '');
@@ -232,56 +261,21 @@ exports.handler = async (event) => {
     // Payment policy
     // - Rush OR same/next day => full pay now
     // - Else => 30% deposit now, remainder auto-charged day before drop-off
-    const payInFullNow = flow !== 'full_service' || isRush || daysUntilDropoff <= 1;
+    const payInFullNow = isRush || daysUntilDropoff <= 1;
     const depositPercent = payInFullNow ? 1.0 : 0.30;
     const paidNowCents = Math.max(0, Math.round(totalCents * depositPercent));
     const balanceCents = Math.max(0, totalCents - paidNowCents);
 
-    const itemsSummary = String(md.items_summary || '').trim();
-
-    // Determine customer + payment method
-    let customerId = null;
-    let paymentMethodId = null;
-    let sourcePaymentIntentId = null;
-    const usingPaymentIntent = !!(!setupIntentId && paymentIntentId);
-
-    if (setupIntentId) {
-      // Setup-mode Checkout (authorization only)
-      const si = await stripe.setupIntents.retrieve(setupIntentId);
-      customerId = si.customer || decoded.customerId || session.customer;
-      paymentMethodId = si.payment_method || null;
-    } else {
-      // Payment-mode Checkout (often manual capture) – derive PM + customer from PaymentIntent
-      const piFromSession = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ['charges.data.payment_method'] });
-      sourcePaymentIntentId = piFromSession.id;
-      customerId = piFromSession.customer || decoded.customerId || session.customer || null;
-
-      // PaymentIntent.payment_method is usually set; fallback to first charge payment_method if needed
-      paymentMethodId =
-        piFromSession.payment_method ||
-        (piFromSession.charges && piFromSession.charges.data && piFromSession.charges.data[0] && piFromSession.charges.data[0].payment_method
-          ? (typeof piFromSession.charges.data[0].payment_method === 'string'
-              ? piFromSession.charges.data[0].payment_method
-              : piFromSession.charges.data[0].payment_method.id)
-          : null);
-    }
-
-    // If Checkout didn't create a customer (common), create one now so we can set defaults/invoice settings
-    if (!customerId) {
-      const created = await stripe.customers.create({
-        name: customerName || undefined,
-        email: customerEmail || undefined,
-        phone: customerPhone || undefined
-      });
-      customerId = created.id;
-    }
+    // Retrieve setup intent to find saved payment method + customer
+    const si = await stripe.setupIntents.retrieve(setupIntentId);
+    const customerId = si.customer || decoded.customerId || session.customer;
+    const paymentMethodId = si.payment_method;
 
     if (!customerId || !paymentMethodId) {
-      return { statusCode: 409, headers: cors, body: JSON.stringify({ error: 'Missing customer or payment method (from SetupIntent or PaymentIntent)' }) };
+      return { statusCode: 409, headers: cors, body: JSON.stringify({ error: 'Missing customer or payment method on SetupIntent' }) };
     }
 
-
-    // Ensure the payment method is attached + set as default for invoices (so off-session charges work)
+    // Ensure PM attached + default for invoices
     try {
       await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
     } catch {
@@ -296,54 +290,35 @@ exports.handler = async (event) => {
       ? 'Rental payment (paid in full)'
       : '30% deposit for rental request';
 
-    let pi;
-
-    // If self-serve used payment-mode Checkout with manual capture, capture that existing PaymentIntent instead
-    if (usingPaymentIntent && payInFullNow && sourcePaymentIntentId) {
-      const existing = await stripe.paymentIntents.retrieve(sourcePaymentIntentId);
-      if (existing.status === 'requires_capture') {
-        pi = await stripe.paymentIntents.capture(sourcePaymentIntentId);
-      } else {
-        // already captured/succeeded, or not capturable; treat as paid
-        pi = existing;
+    const pi = await stripe.paymentIntents.create({
+      amount: paidNowCents,
+      currency: 'usd',
+      customer: customerId,
+      payment_method: paymentMethodId,
+      off_session: true,
+      confirm: true,
+      description: chargeDescription,
+      metadata: {
+        flow: 'full_service',
+        checkout_session_id: sessionId,
+        setup_intent_id: setupIntentId,
+        dropoff_date: dropoffDateStr
       }
-    } else {
-      pi = await stripe.paymentIntents.create({
-        amount: paidNowCents,
-        currency: 'usd',
-        customer: customerId,
-        payment_method: paymentMethodId,
-        off_session: true,
-        confirm: true,
-        description: chargeDescription,
-        metadata: {
-          flow,
-          checkout_session_id: sessionId,
-          setup_intent_id: setupIntentId,
-          dropoff_date: dropoffDateStr
-        }
-      });
-    }
+    });
+
     // Schedule remaining balance (draft invoice; no sending now)
     let scheduledInvoiceId = null;
-    if (balanceCents > 0 && flow === 'full_service') {
+    if (balanceCents > 0) {
       if (!dropoffDateStr) {
         throw new Error('Missing dropoff_date for scheduling remaining balance');
       }
 
-      // --- AUTOPAY SCHEDULING ---
-      // Default behavior: charge the remaining balance by auto-finalizing an invoice
-      // the day before drop-off at 10:00 AM America/New_York.
-      //
-      // TESTING override:
-      //   Set AUTOPAY_TEST_MINUTES to an integer (e.g. "5") to schedule the charge
-      //   a few minutes after approval. Remove/unset the env var to switch back.
       const testMinutesRaw = process.env.AUTOPAY_TEST_MINUTES;
       const testMinutes = testMinutesRaw ? parseInt(testMinutesRaw, 10) : null;
 
-      let dayBeforeStr = null;     // YYYY-MM-DD (only used in default mode)
-      let finalizeAtUtc = null;    // Date object in UTC
-      let autopayLabel = null;     // Human-readable marker saved in metadata
+      let dayBeforeStr = null;
+      let finalizeAtUtc = null;
+      let autopayLabel = null;
 
       if (Number.isFinite(testMinutes) && testMinutes > 0) {
         finalizeAtUtc = new Date(Date.now() + testMinutes * 60 * 1000);
@@ -364,14 +339,13 @@ exports.handler = async (event) => {
           ? `Remaining balance (TEST auto-charge in ${testMinutes} min)`
           : 'Remaining balance (auto-charged day before drop-off)';
 
-      // Create invoice item for the remaining balance
       await stripe.invoiceItems.create({
         customer: customerId,
         currency: 'usd',
         amount: balanceCents,
         description: remainingBalanceDescription,
         metadata: {
-          flow,
+          flow: 'full_service',
           checkout_session_id: sessionId,
           dropoff_date: dropoffDateStr
         }
@@ -383,7 +357,7 @@ exports.handler = async (event) => {
         auto_advance: true,
         automatically_finalizes_at: Math.floor(finalizeAtUtc.getTime() / 1000),
         metadata: {
-          flow,
+          flow: 'full_service',
           checkout_session_id: sessionId,
           setup_intent_id: setupIntentId,
           dropoff_date: dropoffDateStr,
@@ -394,38 +368,17 @@ exports.handler = async (event) => {
       scheduledInvoiceId = inv.id;
     }
 
-    // Customer email confirmation
     await sendEmailApproved({
       to: customerEmail,
       customerName,
       paidNowCents,
       balanceCents,
-      dropoffDateStr,
-      itemsSummary
+      dropoffDateStr
     });
 
-    // Notifications (optional)
-    const twilio = getTwilioClient();
-    const ENABLE_CUSTOMER_SMS = process.env.ENABLE_CUSTOMER_SMS === 'true';
-
-    if (ENABLE_CUSTOMER_SMS && twilio && customerPhone && process.env.TWILIO_PHONE_NUMBER) {
-      try {
-        await twilio.messages.create({
-          body: `Great news${customerName ? ' ' + customerName : ''}! Your request is approved. ${flow === 'self_service' ? 'Payment' : 'Deposit'} has been charged. Automated text—replies not monitored. Email us if needed.`,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          to: customerPhone
-        });
-      } catch (e) {
-        console.warn('Twilio SMS failed:', e.message);
-      }
-    }
-
-
-
-    // Owner SMS (optional)
     if (process.env.OWNER_SMS_TO) {
       const ownerBody = [
-        "Approved order:",
+        "Approved FULL-SERVICE order:",
         customerName || customerEmail || 'Unknown customer',
         `Paid now: $${centsToDollars(paidNowCents)}`,
         balanceCents > 0 ? `Remaining: $${centsToDollars(balanceCents)} (invoice ${scheduledInvoiceId || 'scheduled'})` : 'Paid in full',
@@ -439,6 +392,7 @@ exports.handler = async (event) => {
       headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
         ok: true,
+        flow: 'full_service',
         payment_intent_id: pi.id,
         paid_now_cents: paidNowCents,
         remaining_balance_cents: balanceCents,
