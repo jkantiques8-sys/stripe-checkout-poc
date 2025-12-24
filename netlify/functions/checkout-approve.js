@@ -202,7 +202,7 @@ exports.handler = async (event) => {
       // If the intent was authorized (manual capture), capture it now.
       // If it's already succeeded, just treat as approved/paid.
       if (pi.status === 'requires_capture') {
-        await stripe.paymentIntents.capture(paymentIntentId);
+        await stripe.paymentIntents.capture(paymentIntentId, {}, { idempotencyKey: `capture_${sessionId}` });
       } else if (pi.status !== 'succeeded') {
         return { statusCode: 409, headers: cors, body: JSON.stringify({ error: `PaymentIntent not capturable (status: ${pi.status})` }) };
       }
@@ -303,7 +303,7 @@ exports.handler = async (event) => {
         checkout_session_id: sessionId,
         setup_intent_id: setupIntentId,
         dropoff_date: dropoffDateStr
-      }
+      }, { idempotencyKey: `pi_${sessionId}_${payInFullNow ? 'full' : 'deposit'}` }
     });
 
     // Schedule remaining balance (draft invoice; no sending now)
@@ -349,7 +349,7 @@ exports.handler = async (event) => {
           checkout_session_id: sessionId,
           dropoff_date: dropoffDateStr
         }
-      });
+      }, { idempotencyKey: `invitem_${sessionId}` });
 
       const inv = await stripe.invoices.create({
         customer: customerId,
@@ -363,7 +363,7 @@ exports.handler = async (event) => {
           dropoff_date: dropoffDateStr,
           autopay_scheduled_for: autopayLabel
         }
-      });
+      }, { idempotencyKey: `invoice_${sessionId}` });
 
       scheduledInvoiceId = inv.id;
     }
@@ -392,19 +392,3 @@ exports.handler = async (event) => {
       headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
         ok: true,
-        flow: 'full_service',
-        payment_intent_id: pi.id,
-        paid_now_cents: paidNowCents,
-        remaining_balance_cents: balanceCents,
-        scheduled_invoice_id: scheduledInvoiceId
-      })
-    };
-  } catch (err) {
-    console.error('checkout-approve error:', err);
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json', ...cors },
-      body: JSON.stringify({ error: err?.message || 'Internal error' })
-    };
-  }
-};
