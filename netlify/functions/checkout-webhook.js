@@ -722,41 +722,51 @@ exports.handler = async (event, context) => {
 // WEBHOOK DEDUPE (Google Sheets via Apps Script)
 // ---------------------------------------------------------------------
 async function shouldProcessEventDedupe(stripeEvent) {
-  const url = process.env.DEDUPING_WEBAPP_URL;
+  const baseUrl = process.env.DEDUPING_WEBAPP_URL;
   const secret = process.env.DEDUPING_SHARED_SECRET;
-  if (!url || !secret) {
+  if (!baseUrl || !secret) {
     // Not configured; fail open.
     return true;
   }
 
   const obj = stripeEvent?.data?.object || {};
-  const payload = {
+  const params = new URLSearchParams({
     secret,
     event_id: stripeEvent.id,
     event_type: stripeEvent.type,
     object_id: obj.id || '',
-    created: stripeEvent.created || ''
-  };
+    created: String(stripeEvent.created || '')
+  });
+
+  const url = baseUrl + (baseUrl.includes('?') ? '&' : '?') + params.toString();
 
   try {
-    // Netlify Node runtime supports global fetch (Node 18+). If not, we fall back to https.
     if (typeof fetch === 'function') {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const resp = await fetch(url, { method: 'GET' });
       const txt = await resp.text();
       let json;
-      try { json = JSON.parse(txt); } catch { json = null; }
+      try {
+        json = JSON.parse(txt);
+      } catch {
+        json = null;
+      }
+
       if (!resp.ok) {
-        console.warn('[dedupe] non-200 from dedupe service; failing open', { status: resp.status, body: txt?.slice(0, 200) });
+        console.warn('[dedupe] non-200 from dedupe service; failing open', {
+          status: resp.status,
+          body: txt?.slice(0, 200)
+        });
         return true;
       }
+
       if (json && json.ok === true && json.should_process === false) {
-        console.log('[dedupe] duplicate event; skipping processing', { event_id: stripeEvent.id, type: stripeEvent.type });
+        console.log('[dedupe] duplicate event; skipping processing', {
+          event_id: stripeEvent.id,
+          type: stripeEvent.type
+        });
         return false;
       }
+
       return true;
     }
 
@@ -764,36 +774,43 @@ async function shouldProcessEventDedupe(stripeEvent) {
     const https = require('https');
     const { URL } = require('url');
     const u = new URL(url);
-    const body = JSON.stringify(payload);
 
     const resText = await new Promise((resolve, reject) => {
-      const req = https.request({
-        protocol: u.protocol,
-        hostname: u.hostname,
-        port: u.port || 443,
-        path: u.pathname + u.search,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-      }, (res) => {
-        let d = '';
-        res.on('data', (c) => (d += c));
-        res.on('end', () => resolve(d));
-      });
+      const req = https.request(
+        {
+          protocol: u.protocol,
+          hostname: u.hostname,
+          port: u.port || 443,
+          path: u.pathname + u.search,
+          method: 'GET'
+        },
+        (res) => {
+          let d = '';
+          res.on('data', (c) => (d += c));
+          res.on('end', () => resolve(d));
+        }
+      );
       req.on('error', reject);
-      req.write(body);
       req.end();
     });
 
     try {
       const json = JSON.parse(resText);
       if (json && json.ok === true && json.should_process === false) {
-        console.log('[dedupe] duplicate event; skipping processing', { event_id: stripeEvent.id, type: stripeEvent.type });
+        console.log('[dedupe] duplicate event; skipping processing', {
+          event_id: stripeEvent.id,
+          type: stripeEvent.type
+        });
         return false;
       }
     } catch {}
+
     return true;
   } catch (e) {
-    console.warn('[dedupe] error contacting dedupe service; failing open', e?.message || String(e));
+    console.warn(
+      '[dedupe] error contacting dedupe service; failing open',
+      e?.message || String(e)
+    );
     return true;
   }
 }
