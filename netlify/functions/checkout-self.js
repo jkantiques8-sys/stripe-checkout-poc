@@ -28,8 +28,9 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { items = [], pickup_date, return_date, customer = {}, utm = {}, success_url, cancel_url } =
-      JSON.parse(event.body || '{}');
+    const { items = [], pickup_date, return_date, customer = {}, utm = {}, success_url, cancel_url,
+      client_order_token
+    } = JSON.parse(event.body || '{}');
 
     // --- sanitize items & quantities ---
     let qtyDark = 0, qtyLight = 0;
@@ -139,7 +140,8 @@ exports.handler = async (event) => {
       cancel_url:  cancel_url  || 'https://example.com',
       customer_email: customer.email || undefined,
       metadata: {
-        flow: 'self_service',               // identify this flow for the webhook
+        
+        client_order_token: String(client_order_token || ''),flow: 'self_service',               // identify this flow for the webhook
       
         name:  customer.name  || '',
         phone: customer.phone || '',
@@ -153,7 +155,7 @@ exports.handler = async (event) => {
         ext_days:      String(extDays),
         ext_fee_cents: String(extFeeC),
         min_cents:     String(minC),
-        tax_cents:     String(taxC),
+        tax_cents:     String(t, { idempotencyKey: client_order_token || undefined }axC),
       
       
         ...utm
