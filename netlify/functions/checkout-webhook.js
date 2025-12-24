@@ -1072,6 +1072,38 @@ if ((Number(invoice.total ?? invoice.amount_due ?? 0) === 0) && (Number(invoice.
   console.log(`=== Processing checkout.session.completed ===`);
   console.log('Session ID:', session.id);
 
+  // --- DEDUPE CHECK (GET-based, Google Apps Script) ---
+try {
+  const params = new URLSearchParams({
+    event_id: stripeEvent.id,
+    secret: process.env.DEDUPING_SECRET,
+    event_type: stripeEvent.type,
+    object_id: session.id,
+    created: stripeEvent.created
+  });
+
+  const dedupeUrl =
+    `${process.env.DEDUPING_WEBAPP_URL}?${params.toString()}`;
+
+  const res = await fetch(dedupeUrl, { method: 'GET' });
+  const text = await res.text();
+
+  console.log('[dedupe] status:', res.status, 'body:', text);
+
+  if (res.ok) {
+    const data = JSON.parse(text);
+    if (data.should_process === false) {
+      console.log('[dedupe] already processed; skipping webhook');
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ skipped: true })
+      };
+    }
+  }
+} catch (err) {
+  console.warn('[dedupe] failed; failing open', err);
+}
+
   // In setup-mode, Stripe may NOT create a Customer unless you set
   // `customer_creation: 'always'` when creating the session. We can still
   // proceed by creating a Customer here and attaching the saved payment method.
