@@ -303,8 +303,8 @@ exports.handler = async (event) => {
         checkout_session_id: sessionId,
         setup_intent_id: setupIntentId,
         dropoff_date: dropoffDateStr
-      }, { idempotencyKey: `pi_${sessionId}_${payInFullNow ? 'full' : 'deposit'}` }
-    });
+      }
+    }, { idempotencyKey: `pi_${sessionId}_${payInFullNow ? 'full' : 'deposit'}` });
 
     // Schedule remaining balance (draft invoice; no sending now)
     let scheduledInvoiceId = null;
@@ -392,3 +392,19 @@ exports.handler = async (event) => {
       headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
         ok: true,
+        flow: 'full_service',
+        payment_intent_id: pi.id,
+        paid_now_cents: paidNowCents,
+        remaining_balance_cents: balanceCents,
+        scheduled_invoice_id: scheduledInvoiceId
+      })
+    };
+  } catch (err) {
+    console.error('checkout-approve error:', err);
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json', ...cors },
+      body: JSON.stringify({ error: err?.message || 'Internal error' })
+    };
+  }
+};
