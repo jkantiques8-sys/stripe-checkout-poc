@@ -144,6 +144,7 @@ exports.handler = async (event) => {
   try {
     const {
       flow,
+      client_order_token = '',
       items = [],
       customer = {},
       location = {},
@@ -276,7 +277,7 @@ exports.handler = async (event) => {
     const totalC = taxableC + taxC;
 
     // --- Create Stripe Checkout session in SETUP mode (save card only; no line_items) ---
-    const session = await stripe.checkout.sessions.create({
+    const sessionParams = {
       mode: 'setup',
       payment_method_types: ['card'],
       success_url: success_url || 'https://example.com/thank-you-full-service',
@@ -285,7 +286,7 @@ exports.handler = async (event) => {
       custom_text: {
         submit: {
           message:
-            "Your card will be saved to reserve your request. You won’t be charged until your order is approved."
+            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
         }
       },
       metadata: {
@@ -330,7 +331,12 @@ exports.handler = async (event) => {
         // UTM (sanitized)
         ...sanitizeUtm(utm)
       }
-    });
+    };
+
+    const idemKey = String(client_order_token || '').trim();
+    const session = idemKey
+      ? await stripe.checkout.sessions.create(sessionParams, { idempotencyKey: idemKey.slice(0, 255) })
+      : await stripe.checkout.sessions.create(sessionParams);
 
     return {
       statusCode: 200,
