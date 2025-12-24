@@ -28,9 +28,8 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { items = [], pickup_date, return_date, customer = {}, utm = {}, success_url, cancel_url,
-      client_order_token
-    } = JSON.parse(event.body || '{}');
+    const { items = [], pickup_date, return_date, customer = {}, utm = {}, success_url, cancel_url, client_order_token } =
+      JSON.parse(event.body || '{}');
 
     // --- sanitize items & quantities ---
     let qtyDark = 0, qtyLight = 0;
@@ -124,6 +123,8 @@ exports.handler = async (event) => {
     }
 
 
+    const createOpts = client_order_token ? { idempotencyKey: String(client_order_token) } : undefined;
+
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       payment_intent_data: {
@@ -140,8 +141,10 @@ exports.handler = async (event) => {
       cancel_url:  cancel_url  || 'https://example.com',
       customer_email: customer.email || undefined,
       metadata: {
-        
-        client_order_token: String(client_order_token || ''),flow: 'self_service',               // identify this flow for the webhook
+        flow: 'self_service',               // identify this flow for the webhook
+
+        // Optional idempotency token passed from the client (helps dedupe accidental retries)
+        client_order_token: String(client_order_token || ''),
       
         name:  customer.name  || '',
         phone: customer.phone || '',
@@ -155,14 +158,14 @@ exports.handler = async (event) => {
         ext_days:      String(extDays),
         ext_fee_cents: String(extFeeC),
         min_cents:     String(minC),
-        tax_cents:     String(t, { idempotencyKey: client_order_token || undefined }axC),
+        tax_cents:     String(taxC),
       
       
         ...utm
       }
       
       
-    });
+    }, createOpts);
 
     return {
       statusCode: 200,
