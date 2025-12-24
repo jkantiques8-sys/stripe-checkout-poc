@@ -43,46 +43,6 @@ const OWNER_PHONE = process.env.OWNER_PHONE; // e.g. "+1917…"
 const TWILIO_FROM = process.env.TWILIO_PHONE_NUMBER;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
-
-// ==== Webhook dedupe (Google Sheet via Apps Script) ==========================
-// We call a tiny Apps Script Web App that stores Stripe event IDs in a Sheet.
-// If the event was already seen, we return early (Stripe may retry webhooks).
-const DEDUPE_WEBAPP_URL = process.env.DEDUPE_WEBAPP_URL; // Apps Script web app URL
-const DEDUPE_SHARED_SECRET = process.env.DEDUPE_SHARED_SECRET; // shared secret to protect the endpoint
-
-async function shouldProcessStripeEvent(stripeEvent) {
-  if (!DEDUPE_WEBAPP_URL || !DEDUPE_SHARED_SECRET) return true; // if not configured, do not block
-  try {
-    const object = stripeEvent?.data?.object || {};
-    const body = {
-      secret: DEDUPE_SHARED_SECRET,
-      event_id: stripeEvent.id,
-      event_type: stripeEvent.type,
-      object_id: object.id || '',
-      created: stripeEvent.created || 0
-    };
-    const res = await fetch(DEDUPE_WEBAPP_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) {
-      console.warn('dedupe: non-200 from webapp; continuing', res.status);
-      return true;
-    }
-    const data = await res.json().catch(() => ({}));
-    // Expect: { ok: true, should_process: true|false }
-    if (data && data.should_process === false) {
-      console.log('dedupe: already processed; skipping', { event_id: stripeEvent.id, event_type: stripeEvent.type });
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.warn('dedupe: error; continuing', e?.message || String(e));
-    return true;
-  }
-}
-
 // ==== Helpers ===============================================================
 
 const asNumberOrNull = (value) => {
@@ -755,14 +715,95 @@ exports.handler = async (event, context) => {
     stripeEvent.type !== 'payment_intent.succeeded'
   ) {
     return { statusCode: 200, body: JSON.stringify({ received: true }) };
-
-  // DEDUPING: Stripe can retry webhooks; ensure we only process each event once.
-  const okToProcess = await shouldProcessStripeEvent(stripeEvent);
-  if (!okToProcess) {
-    return { statusCode: 200, body: JSON.stringify({ received: true, deduped: true }) };
   }
 
+
+// ---------------------------------------------------------------------
+// WEBHOOK DEDUPE (Google Sheets via Apps Script)
+// ---------------------------------------------------------------------
+async function shouldProcessEventDedupe(stripeEvent) {
+  const url = process.env.DEDUPING_WEBAPP_URL;
+  const secret = process.env.DEDUPING_SHARED_SECRET;
+  if (!url || !secret) {
+    // Not configured; fail open.
+    return true;
   }
+
+  const obj = stripeEvent?.data?.object || {};
+  const payload = {
+    secret,
+    event_id: stripeEvent.id,
+    event_type: stripeEvent.type,
+    object_id: obj.id || '',
+    created: stripeEvent.created || ''
+  };
+
+  try {
+    // Netlify Node runtime supports global fetch (Node 18+). If not, we fall back to https.
+    if (typeof fetch === 'function') {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const txt = await resp.text();
+      let json;
+      try { json = JSON.parse(txt); } catch { json = null; }
+      if (!resp.ok) {
+        console.warn('[dedupe] non-200 from dedupe service; failing open', { status: resp.status, body: txt?.slice(0, 200) });
+        return true;
+      }
+      if (json && json.ok === true && json.should_process === false) {
+        console.log('[dedupe] duplicate event; skipping processing', { event_id: stripeEvent.id, type: stripeEvent.type });
+        return false;
+      }
+      return true;
+    }
+
+    // Fallback: https request (very unlikely needed)
+    const https = require('https');
+    const { URL } = require('url');
+    const u = new URL(url);
+    const body = JSON.stringify(payload);
+
+    const resText = await new Promise((resolve, reject) => {
+      const req = https.request({
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: u.pathname + u.search,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      }, (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c));
+        res.on('end', () => resolve(d));
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    try {
+      const json = JSON.parse(resText);
+      if (json && json.ok === true && json.should_process === false) {
+        console.log('[dedupe] duplicate event; skipping processing', { event_id: stripeEvent.id, type: stripeEvent.type });
+        return false;
+      }
+    } catch {}
+    return true;
+  } catch (e) {
+    console.warn('[dedupe] error contacting dedupe service; failing open', e?.message || String(e));
+    return true;
+  }
+}
+
+
+// Dedupe: if we've already processed this exact Stripe event id, skip all side effects.
+const shouldProcess = await shouldProcessEventDedupe(stripeEvent);
+if (!shouldProcess) {
+  return { statusCode: 200, body: JSON.stringify({ received: true, deduped: true }) };
+}
 
   // ---------------------------------------------------------------------
   // INVOICE PAID (customer + owner email)
