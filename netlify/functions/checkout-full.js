@@ -286,7 +286,7 @@ exports.handler = async (event) => {
       custom_text: {
         submit: {
           message:
-            "This saves your card to reserve your request. We usually confirm availability within ~2 hours. If approved, we’ll charge a 30% deposit and email an invoice for the remaining balance."
+            "Your card details will be securely saved to reserve your request. No charges are made until your request is approved."
         }
       },
       metadata: {
