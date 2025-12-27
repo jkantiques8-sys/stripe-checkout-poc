@@ -3,7 +3,6 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const jwt = require('jsonwebtoken');
 
 let resendClient = null;
-
 function getResendClient() {
   if (!resendClient && process.env.RESEND_API_KEY) {
     const { Resend } = require('resend');
@@ -18,33 +17,15 @@ const cors = {
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
 };
 
-function pickPaymentIntentId(decoded) {
-  return (
-    decoded.paymentIntentId ||
-    decoded.intent ||
-    decoded.payment_intent ||
-    decoded.payment_intent_id ||
-    decoded.paymentIntent ||
-    decoded.pi ||
-    null
-  );
-}
-
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: cors };
   }
 
   try {
-    // token via GET ?token= or POST body
-    const qsToken = event.queryStringParameters?.token;
-    let bodyToken = null;
-    if (event.body) {
-      try {
-        bodyToken = JSON.parse(event.body).token;
-      } catch {}
-    }
-    const token = qsToken || bodyToken;
+    const token =
+      event.queryStringParameters?.token ||
+      (event.body && JSON.parse(event.body).token);
 
     if (!token) {
       return {
@@ -54,91 +35,71 @@ exports.handler = async (event) => {
       };
     }
 
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch {
-      return {
-        statusCode: 401,
-        headers: cors,
-        body: JSON.stringify({ error: 'Invalid or expired token' }),
-      };
-    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const paymentIntentId = pickPaymentIntentId(decoded);
-    const customerName = decoded.customerName || decoded.name || '';
-    const customerEmail = decoded.customerEmail || decoded.email || '';
+    const setupIntentId =
+      decoded.setupIntentId ||
+      decoded.setup_intent ||
+      decoded.setup_intent_id;
 
-    // 🔒 Hard guard: never call Stripe with null intent
-    if (!paymentIntentId || typeof paymentIntentId !== 'string') {
+    const customerEmail = decoded.customerEmail || '';
+    const customerName = decoded.customerName || '';
+
+    if (!setupIntentId) {
       return {
         statusCode: 400,
-        headers: { 'Content-Type': 'application/json', ...cors },
+        headers: cors,
         body: JSON.stringify({
           success: false,
-          error: 'Missing paymentIntentId in token payload',
-          payloadKeys: Object.keys(decoded || {}),
+          error: 'Missing setupIntentId in token payload',
+          payloadKeys: Object.keys(decoded),
         }),
       };
     }
 
-    // Retrieve PI
-    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    // Retrieve SetupIntent
+    const si = await stripe.setupIntents.retrieve(setupIntentId);
 
-    // Don’t cancel if already paid / processing
-    if (pi.status === 'succeeded' || pi.status === 'processing') {
-      return {
-        statusCode: 409,
-        headers: { 'Content-Type': 'application/json', ...cors },
-        body: JSON.stringify({
-          success: false,
-          error: 'Not cancelable',
-          details: `PaymentIntent is ${pi.status}`,
-        }),
-      };
+    // Detach saved payment method (THIS is the key step)
+    if (si.payment_method) {
+      await stripe.paymentMethods.detach(si.payment_method);
     }
 
-    // Cancel (void authorization)
-    const canceled = await stripe.paymentIntents.cancel(paymentIntentId);
+    // Optionally cancel SetupIntent
+    if (si.status !== 'canceled') {
+      await stripe.setupIntents.cancel(setupIntentId);
+    }
 
-    // Optional email notification
+    // Optional email
     const resend = getResendClient();
     if (resend && customerEmail) {
-      try {
-        await resend.emails.send({
-          from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
-          to: customerEmail,
-          subject: 'Order Request Declined',
-          html: `
-            <p>Hi ${customerName || 'there'},</p>
-            <p>We’re unable to proceed with your order request.</p>
-            <p>Your card authorization has been voided and no charge was made.</p>
-          `,
-        });
-      } catch (e) {
-        console.error('Email error:', e.message);
-      }
+      await resend.emails.send({
+        from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
+        to: customerEmail,
+        subject: 'Order Request Declined',
+        html: `
+          <p>Hi ${customerName || 'there'},</p>
+          <p>We’re unable to proceed with your order request.</p>
+          <p>Your card details were not charged and have been removed.</p>
+        `,
+      });
     }
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json', ...cors },
+      headers: cors,
       body: JSON.stringify({
         success: true,
-        message: 'Payment authorization cancelled',
-        paymentIntentId: canceled.id,
-        status: canceled.status,
+        message: 'SetupIntent cancelled and payment method removed',
+        setupIntentId,
       }),
     };
-  } catch (error) {
-    console.error('Decline error:', error);
+  } catch (err) {
+    console.error(err);
     return {
       statusCode: 500,
       headers: cors,
-      body: JSON.stringify({
-        error: 'Failed to decline payment',
-        details: error.message,
-      }),
+      body: JSON.stringify({ error: err.message }),
     };
   }
 };
