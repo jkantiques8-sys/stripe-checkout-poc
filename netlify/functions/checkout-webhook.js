@@ -595,6 +595,12 @@ const buildSelfCustomerEmailHtml = (details) => {
   Need to make changes? Simply reply to this email.
 </p>
 
+    <p style="margin-top:16px;">
+      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Rental Policies</a>
+    </p>
+
+    <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
+
     <h3 style="margin:24px 0 8px;font-size:15px;">Pickup &amp; Return</h3>
     <p style="margin:0 0 4px;"><strong>Pickup:</strong> ${schedule.pickup}</p>
     <p style="margin:0 0 4px;"><strong>Return:</strong> ${schedule.returnDate}</p>
@@ -619,11 +625,6 @@ const buildSelfCustomerEmailHtml = (details) => {
 
     ${itemsHtml}
 
-    <p style="margin-top:16px;">
-      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Rental Policies</a>
-    </p>
-
-    <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
   </div>
   `;
 };
