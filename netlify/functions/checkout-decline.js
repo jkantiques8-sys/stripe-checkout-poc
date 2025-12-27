@@ -24,6 +24,8 @@ function pickSessionId(decoded) {
     decoded.sessionId ||
     decoded.session_id ||
     decoded.session ||
+    decoded.checkoutSession ||
+    decoded.checkout_session ||
     null
   );
 }
@@ -34,23 +36,37 @@ exports.handler = async (event) => {
   }
 
   try {
+    // Accept token via GET ?token=... OR POST body { token }
     const qsToken = event.queryStringParameters?.token;
+
     let bodyToken = null;
     if (event.body) {
-      try { bodyToken = JSON.parse(event.body).token; } catch {}
+      try {
+        bodyToken = JSON.parse(event.body).token;
+      } catch (_) {}
     }
+
     const token = qsToken || bodyToken;
-
     if (!token) {
-      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Token is required' }) };
+      return {
+        statusCode: 400,
+        headers: cors,
+        body: JSON.stringify({ success: false, error: 'Token is required' }),
+      };
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (_) {
+      return {
+        statusCode: 401,
+        headers: cors,
+        body: JSON.stringify({ success: false, error: 'Invalid or expired token' }),
+      };
+    }
 
     const sessionId = pickSessionId(decoded);
-    const customerEmail = decoded.customerEmail || decoded.email || '';
-    const customerName  = decoded.customerName  || decoded.name  || '';
-
     if (!sessionId || typeof sessionId !== 'string') {
       return {
         statusCode: 400,
@@ -64,45 +80,59 @@ exports.handler = async (event) => {
       };
     }
 
-    // 1) Retrieve session so we can find the SetupIntent / PaymentIntent if present
+    // Retrieve session (source of truth for customer email/name)
     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    // 2) Expire the Checkout session (this is the Stripe-supported way)
-    // If it’s already expired/complete, Stripe will throw—so we handle that gracefully.
+    const sessionEmail = session.customer_details?.email || session.customer_email || '';
+    const sessionName = session.customer_details?.name || '';
+
+    const customerEmail = decoded.customerEmail || decoded.email || sessionEmail || '';
+    const customerName = decoded.customerName || decoded.name || sessionName || '';
+
+    // Expire the Checkout Session (Stripe-required for Checkout-created SetupIntents)
+    // If it’s already complete/expired, Stripe may throw—don’t fail the whole decline.
     let expired = null;
+    let expireError = null;
     try {
       expired = await stripe.checkout.sessions.expire(sessionId);
     } catch (e) {
-      // If the session is already complete/expired, we don’t want a hard failure.
-      // We'll continue to optional cleanup below.
+      expireError = e.message;
       console.error('Expire session error (continuing):', e.message);
     }
 
-    // 3) Optional cleanup: if Checkout already saved/attached a payment method, detach it
-    // - setup mode: session.setup_intent points to a SetupIntent id
-    // - payment mode: session.payment_intent points to a PaymentIntent id (not your current case, but safe)
+    // Optional cleanup: detach any saved payment method (best-effort)
+    // - In setup mode, Checkout creates a SetupIntent and the PM can be detached
+    let detachError = null;
     try {
       if (session.setup_intent) {
         const si = await stripe.setupIntents.retrieve(session.setup_intent);
         if (si?.payment_method) {
           await stripe.paymentMethods.detach(si.payment_method);
         }
-      } else if (session.payment_intent) {
-        // If you ever use payment mode in the future, you could cancel here too,
-        // but we’ll avoid touching money unless you explicitly want that.
-        // const pi = await stripe.paymentIntents.retrieve(session.payment_intent);
       }
     } catch (e) {
+      detachError = e.message;
       console.error('Optional detach cleanup error (non-fatal):', e.message);
     }
 
-    // 4) Optional email notification
+    // Email notification (with explicit diagnostics)
+    let emailSent = false;
+    let emailError = null;
+    let emailTo = customerEmail || null;
+
     const resend = getResendClient();
-    if (resend && customerEmail) {
+
+    if (!process.env.RESEND_API_KEY) {
+      emailError = 'RESEND_API_KEY missing in environment';
+    } else if (!emailTo) {
+      emailError = 'No customer email found (token + session both empty)';
+    } else if (!resend) {
+      emailError = 'Resend client could not initialize';
+    } else {
       try {
         await resend.emails.send({
           from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
-          to: customerEmail,
+          to: emailTo,
           subject: 'Order Request Declined',
           html: `
             <p>Hi ${customerName || 'there'},</p>
@@ -110,7 +140,9 @@ exports.handler = async (event) => {
             <p>No charge was made, and your card details will not be kept on file.</p>
           `,
         });
+        emailSent = true;
       } catch (e) {
+        emailError = e.message;
         console.error('Email error:', e.message);
       }
     }
@@ -123,6 +155,12 @@ exports.handler = async (event) => {
         message: 'Checkout Session expired (declined)',
         sessionId,
         sessionStatus: expired?.status || session.status,
+        // diagnostics you can remove later
+        expireError,
+        detachError,
+        emailSent,
+        emailTo,
+        emailError,
       }),
     };
   } catch (err) {
@@ -130,7 +168,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 500,
       headers: cors,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({ success: false, error: 'Failed to decline', details: err.message }),
     };
   }
 };
