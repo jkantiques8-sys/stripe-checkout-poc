@@ -1,5 +1,6 @@
 // netlify/functions/checkout.js
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const crypto = require('crypto');
 
 // ---- Business settings (mirror the client; server is authoritative) ----
 const USD = v => Math.round(v);                // cents already
@@ -123,9 +124,8 @@ exports.handler = async (event) => {
     }
 
 
-    const createOpts = client_order_token ? { idempotencyKey: String(client_order_token) } : undefined;
 
-    const session = await stripe.checkout.sessions.create({
+    const sessionParams = {
       mode: 'payment',
       payment_intent_data: {
         capture_method: 'manual',   // AUTH ONLY - capture after phone confirmation
@@ -165,7 +165,13 @@ exports.handler = async (event) => {
       }
       
       
-    }, createOpts);
+    };
+
+    // Stripe idempotency: stable key derived from params.
+    // Same params => safe retry; different params => different key (prevents Stripe 400 mismatch).
+    const idemKey = 'self_' + crypto.createHash('sha256').update(JSON.stringify(sessionParams)).digest('hex').slice(0, 48);
+
+    const session = await stripe.checkout.sessions.create(sessionParams, { idempotencyKey: idemKey });
 
     return {
       statusCode: 200,
