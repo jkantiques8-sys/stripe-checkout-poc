@@ -154,8 +154,8 @@ exports.handler = async (event) => {
         bcc: internalBcc,
         reply_to: replyToEmail,
         subject: subjectTag
-          ? `Order Request Update (${subjectTag})`
-          : 'Order Request Update',
+          ? `Order Request Declined`
+          : 'Order Request Declined',
         html: `
           <p>Hi ${customerName || 'there'},</p>
 
