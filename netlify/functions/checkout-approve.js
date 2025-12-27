@@ -108,7 +108,7 @@ async function sendEmailApproved({ to, customerName, paidNowCents, balanceCents,
     html: `
       <p>Hi ${customerName || ''},</p>
       <p>Your request has been approved.</p>
-      <p><strong>Payment processed now:</strong> ${paidNowStr}</p>
+      <p><strong>${balanceCents > 0 ? 'Deposit charged:' : 'Payment charged:'}</strong> ${paidNowStr}</p>
       ${balanceLine}
       <p>If you have any questions, just reply to this email.</p>
     `
