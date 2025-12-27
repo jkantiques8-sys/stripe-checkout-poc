@@ -439,6 +439,14 @@ const buildCustomerEmailHtml = (details) => {
 <p>
 	Need to make changes? Just reply to this email and we’ll take care of it.
 </p>
+
+
+    <p style="margin-top:16px;">
+      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
+    </p>
+
+    <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
+
     <h3 style="margin:16px 0 4px;font-size:15px;">Schedule</h3>
     <p style="margin:0;">
       <strong>Delivery:</strong> ${schedule.dropoff}<br />
@@ -475,20 +483,6 @@ const buildCustomerEmailHtml = (details) => {
       </tbody>
     </table>
 
-    <p style="margin-top:16px;">
-      We'll confirm your order within 2 business hours. We'll only charge your card
-      once we confirm we can fulfill your order.
-    </p>
-
-    <p style="margin-top:16px;">
-      If you have any questions or need to make changes, just reply to this email.
-    </p>
-
-    <p style="margin-top:16px;">
-      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
-    </p>
-
-    <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
   </div>
   `;
 };
