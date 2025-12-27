@@ -1,5 +1,6 @@
 // netlify/functions/checkout-full.js
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const crypto = require('crypto');
 
 // ---- Business settings (prices in cents) ----
 const USD = v => Math.round(v);
@@ -333,10 +334,8 @@ exports.handler = async (event) => {
       }
     };
 
-    const idemKey = String(client_order_token || '').trim();
-    const session = idemKey
-      ? await stripe.checkout.sessions.create(sessionParams, { idempotencyKey: idemKey.slice(0, 255) })
-      : await stripe.checkout.sessions.create(sessionParams);
+    const idemKey = 'full_' + crypto.createHash('sha256').update(JSON.stringify(sessionParams)).digest('hex').slice(0, 48);
+    const session = await stripe.checkout.sessions.create(sessionParams, { idempotencyKey: idemKey });
 
     return {
       statusCode: 200,
