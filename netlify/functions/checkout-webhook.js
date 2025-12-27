@@ -442,7 +442,7 @@ const buildCustomerEmailHtml = (details) => {
 
 
     <p style="margin-top:16px;">
-      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
+      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Rental Policies</a>
     </p>
 
     <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
@@ -620,7 +620,7 @@ const buildSelfCustomerEmailHtml = (details) => {
     ${itemsHtml}
 
     <p style="margin-top:16px;">
-      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
+      <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Rental Policies</a>
     </p>
 
     <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
@@ -1008,7 +1008,7 @@ if ((Number(invoice.total ?? invoice.amount_due ?? 0) === 0) && (Number(invoice.
         </p>
 
         <p style="margin-top:16px;">
-          <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Terms & Conditions</a>
+          <a href="https://kazoo-earthworm-tgxd.squarespace.com/terms-conditions">View our Rental Policies</a>
         </p>
 
         <p style="margin-top:24px;">– Kraus’ Tables &amp; Chairs</p>
