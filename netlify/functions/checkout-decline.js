@@ -101,7 +101,6 @@ exports.handler = async (event) => {
     }
 
     // Optional cleanup: detach any saved payment method (best-effort)
-    // - In setup mode, Checkout creates a SetupIntent and the PM can be detached
     let detachError = null;
     try {
       if (session.setup_intent) {
@@ -119,8 +118,14 @@ exports.handler = async (event) => {
     let emailSent = false;
     let emailError = null;
     let emailTo = customerEmail || null;
+    let resendId = null;
 
     const resend = getResendClient();
+
+    // Optional debug BCC (set this in Netlify env vars temporarily)
+    // Example: DECLINE_DEBUG_BCC=orders@kraustables.com
+    const debugBccRaw = (process.env.DECLINE_DEBUG_BCC || '').trim();
+    const debugBcc = debugBccRaw && debugBccRaw.includes('@') ? debugBccRaw : null;
 
     if (!process.env.RESEND_API_KEY) {
       emailError = 'RESEND_API_KEY missing in environment';
@@ -130,16 +135,26 @@ exports.handler = async (event) => {
       emailError = 'Resend client could not initialize';
     } else {
       try {
-        await resend.emails.send({
+        const subjectTag = sessionId ? sessionId.slice(-8) : 'request';
+        const result = await resend.emails.send({
           from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
           to: emailTo,
-          subject: 'Order Request Declined',
+          ...(debugBcc ? { bcc: debugBcc } : {}),
+          reply_to: "Kraus' Tables & Chairs <orders@kraustables.com>",
+          subject: `Order Request Declined (${subjectTag})`,
+          headers: {
+            'X-Kraus-Flow': decoded.flow || decoded.flowType || 'unknown',
+            'X-Kraus-SessionId': sessionId,
+          },
           html: `
             <p>Hi ${customerName || 'there'},</p>
             <p>We’re unable to proceed with your order request.</p>
             <p>No charge was made, and your card details will not be kept on file.</p>
           `,
         });
+
+        // Resend typically returns an object with an id
+        resendId = result?.id || null;
         emailSent = true;
       } catch (e) {
         emailError = e.message;
@@ -160,6 +175,8 @@ exports.handler = async (event) => {
         detachError,
         emailSent,
         emailTo,
+        debugBccEnabled: Boolean(debugBcc),
+        resendId,
         emailError,
       }),
     };
