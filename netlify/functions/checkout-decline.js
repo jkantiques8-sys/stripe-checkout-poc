@@ -75,33 +75,43 @@ exports.handler = async (event) => {
           success: false,
           error: 'Missing Checkout Session id in token payload',
           details: 'Expected a Checkout Session id like "cs_..." on decline tokens.',
-          payloadKeys: Object.keys(decoded || {}),
         }),
       };
     }
 
-    // Retrieve session (source of truth for customer email/name)
+    // Retrieve Checkout Session (authoritative source for email/name)
     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    const sessionEmail = session.customer_details?.email || session.customer_email || '';
-    const sessionName = session.customer_details?.name || '';
+    const sessionEmail =
+      session.customer_details?.email ||
+      session.customer_email ||
+      '';
 
-    const customerEmail = decoded.customerEmail || decoded.email || sessionEmail || '';
-    const customerName = decoded.customerName || decoded.name || sessionName || '';
+    const sessionName =
+      session.customer_details?.name ||
+      '';
 
-    // Expire the Checkout Session (Stripe-required for Checkout-created SetupIntents)
-    // If it’s already complete/expired, Stripe may throw—don’t fail the whole decline.
+    const customerEmail =
+      decoded.customerEmail ||
+      decoded.email ||
+      sessionEmail ||
+      '';
+
+    const customerName =
+      decoded.customerName ||
+      decoded.name ||
+      sessionName ||
+      '';
+
+    // Expire Checkout Session (best-effort)
     let expired = null;
-    let expireError = null;
     try {
       expired = await stripe.checkout.sessions.expire(sessionId);
-    } catch (e) {
-      expireError = e.message;
-      console.error('Expire session error (continuing):', e.message);
+    } catch (_) {
+      // Session may already be complete; this is fine
     }
 
-    // Optional cleanup: detach any saved payment method (best-effort)
-    let detachError = null;
+    // Detach saved payment method (best-effort)
     try {
       if (session.setup_intent) {
         const si = await stripe.setupIntents.retrieve(session.setup_intent);
@@ -109,84 +119,69 @@ exports.handler = async (event) => {
           await stripe.paymentMethods.detach(si.payment_method);
         }
       }
-    } catch (e) {
-      detachError = e.message;
-      console.error('Optional detach cleanup error (non-fatal):', e.message);
-    }
+    } catch (_) {}
 
-    // Email notification (uses the SAME env var as your other emails)
+    // -------- Email (clean, normalized, production-ready) --------
+
     const resend = getResendClient();
-    const debugBccRaw = (process.env.DECLINE_DEBUG_BCC || '').trim();
-    const debugBcc = debugBccRaw && debugBccRaw.includes('@') ? debugBccRaw : null;
 
-    // ✅ Reuse your existing sender config
-    // (Your pending/request emails already work with this.)
-    const FROM_EMAIL_RAW = (process.env.FROM_EMAIL || '').trim();
-    const fromEmail = FROM_EMAIL_RAW || "Kraus' Tables & Chairs <orders@kraustables.com>";
+    const fromEmail =
+      (process.env.FROM_EMAIL || '').trim() ||
+      "Kraus' Tables & Chairs <orders@kraustables.com>";
 
-    // Optional: if you already have a reply-to env var, use it; otherwise default
-    const REPLY_TO_RAW = (process.env.REPLY_TO_EMAIL || '').trim();
-    const replyToEmail = REPLY_TO_RAW || 'orders@kraustables.com';
+    const replyToEmail =
+      (process.env.REPLY_TO_EMAIL || '').trim() ||
+      'orders@kraustables.com';
 
-    let emailTo = customerEmail || null;
+    // Always BCC internal inbox for records
+    const internalBcc = 'orders@kraustables.com';
+
     let emailSent = false;
     let emailError = null;
 
-    // Resend diagnostics
-    let resendId = null;
-    let resendError = null;
-    let resendData = null;
-    let resendRawKeys = null;
-
     if (!process.env.RESEND_API_KEY) {
-      emailError = 'RESEND_API_KEY missing in environment';
-    } else if (!emailTo) {
-      emailError = 'No customer email found (token + session both empty)';
+      emailError = 'RESEND_API_KEY missing';
+    } else if (!customerEmail) {
+      emailError = 'Customer email missing';
     } else if (!resend) {
-      emailError = 'Resend client could not initialize';
+      emailError = 'Resend client not initialized';
     } else {
-      try {
-        const subjectTag = sessionId ? sessionId.slice(-8) : 'request';
+      const subjectTag = sessionId ? sessionId.slice(-8) : '';
 
-        const result = await resend.emails.send({
-          from: fromEmail,
-          to: emailTo,
-          ...(debugBcc ? { bcc: debugBcc } : {}),
-          reply_to: replyToEmail,
-          subject: `Order Request Declined (${subjectTag})`,
-          headers: {
-            'X-Kraus-SessionId': sessionId,
-          },
-          html: `
-            <p>Hi ${customerName || 'there'},</p>
-            <p>We’re unable to proceed with your order request.</p>
-            <p>No charge was made, and your card details will not be kept on file.</p>
-          `,
-        });
+      const result = await resend.emails.send({
+        from: fromEmail,
+        to: customerEmail,
+        bcc: internalBcc,
+        reply_to: replyToEmail,
+        subject: subjectTag
+          ? `Order Request Update (${subjectTag})`
+          : 'Order Request Update',
+        html: `
+          <p>Hi ${customerName || 'there'},</p>
 
-        // Normalize result shape across Resend SDK versions
-        resendRawKeys = result ? Object.keys(result) : null;
-        resendData = result?.data ?? null;
-        resendError = result?.error ?? null;
+          <p>Thank you for your order request.</p>
 
-        resendId = result?.id || result?.data?.id || null;
+          <p>
+            Unfortunately, we’re unable to proceed with this request at this time.
+            No charge was made, and your card details were not retained.
+          </p>
 
-        if (resendError) {
-          emailError =
-            typeof resendError === 'string'
-              ? resendError
-              : (resendError.message || JSON.stringify(resendError));
-          emailSent = false;
-        } else if (resendId) {
-          emailSent = true;
-        } else {
-          emailSent = false;
-          emailError = 'Resend returned no id (unknown delivery state)';
-        }
-      } catch (e) {
-        emailSent = false;
-        emailError = e.message;
-        console.error('Email exception:', e.message);
+          <p>
+            If you have any questions or would like to explore alternative options,
+            feel free to reply to this email.
+          </p>
+
+          <p>
+            —<br />
+            Kraus’ Tables &amp; Chairs
+          </p>
+        `,
+      });
+
+      if (result?.id || result?.data?.id) {
+        emailSent = true;
+      } else {
+        emailError = 'Resend did not return an email id';
       }
     }
 
@@ -198,22 +193,8 @@ exports.handler = async (event) => {
         message: 'Checkout Session expired (declined)',
         sessionId,
         sessionStatus: expired?.status || session.status,
-
-        // Stripe diagnostics
-        expireError,
-        detachError,
-
-        // Email diagnostics
-        fromUsed: fromEmail,
-        replyToUsed: replyToEmail,
-        debugBccEnabled: Boolean(debugBcc),
-        emailTo,
         emailSent,
         emailError,
-        resendId,
-        resendError,
-        resendData,
-        resendRawKeys,
       }),
     };
   } catch (err) {
@@ -221,7 +202,11 @@ exports.handler = async (event) => {
     return {
       statusCode: 500,
       headers: cors,
-      body: JSON.stringify({ success: false, error: 'Failed to decline', details: err.message }),
+      body: JSON.stringify({
+        success: false,
+        error: 'Failed to decline order',
+        details: err.message,
+      }),
     };
   }
 };
