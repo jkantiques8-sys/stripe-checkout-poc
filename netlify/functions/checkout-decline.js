@@ -17,85 +17,116 @@ const cors = {
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
 };
 
+function pickSessionId(decoded) {
+  return (
+    decoded.checkoutSessionId ||
+    decoded.checkout_session_id ||
+    decoded.sessionId ||
+    decoded.session_id ||
+    decoded.session ||
+    null
+  );
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: cors };
   }
 
   try {
-    const token =
-      event.queryStringParameters?.token ||
-      (event.body && JSON.parse(event.body).token);
+    const qsToken = event.queryStringParameters?.token;
+    let bodyToken = null;
+    if (event.body) {
+      try { bodyToken = JSON.parse(event.body).token; } catch {}
+    }
+    const token = qsToken || bodyToken;
 
     if (!token) {
-      return {
-        statusCode: 400,
-        headers: cors,
-        body: JSON.stringify({ error: 'Token is required' }),
-      };
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Token is required' }) };
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const setupIntentId =
-      decoded.setupIntentId ||
-      decoded.setup_intent ||
-      decoded.setup_intent_id;
+    const sessionId = pickSessionId(decoded);
+    const customerEmail = decoded.customerEmail || decoded.email || '';
+    const customerName  = decoded.customerName  || decoded.name  || '';
 
-    const customerEmail = decoded.customerEmail || '';
-    const customerName = decoded.customerName || '';
-
-    if (!setupIntentId) {
+    if (!sessionId || typeof sessionId !== 'string') {
       return {
         statusCode: 400,
         headers: cors,
         body: JSON.stringify({
           success: false,
-          error: 'Missing setupIntentId in token payload',
-          payloadKeys: Object.keys(decoded),
+          error: 'Missing Checkout Session id in token payload',
+          details: 'Expected a Checkout Session id like "cs_..." on decline tokens.',
+          payloadKeys: Object.keys(decoded || {}),
         }),
       };
     }
 
-    // Retrieve SetupIntent
-    const si = await stripe.setupIntents.retrieve(setupIntentId);
+    // 1) Retrieve session so we can find the SetupIntent / PaymentIntent if present
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    // Detach saved payment method (THIS is the key step)
-    if (si.payment_method) {
-      await stripe.paymentMethods.detach(si.payment_method);
+    // 2) Expire the Checkout session (this is the Stripe-supported way)
+    // If it’s already expired/complete, Stripe will throw—so we handle that gracefully.
+    let expired = null;
+    try {
+      expired = await stripe.checkout.sessions.expire(sessionId);
+    } catch (e) {
+      // If the session is already complete/expired, we don’t want a hard failure.
+      // We'll continue to optional cleanup below.
+      console.error('Expire session error (continuing):', e.message);
     }
 
-    // Optionally cancel SetupIntent
-    if (si.status !== 'canceled') {
-      await stripe.setupIntents.cancel(setupIntentId);
+    // 3) Optional cleanup: if Checkout already saved/attached a payment method, detach it
+    // - setup mode: session.setup_intent points to a SetupIntent id
+    // - payment mode: session.payment_intent points to a PaymentIntent id (not your current case, but safe)
+    try {
+      if (session.setup_intent) {
+        const si = await stripe.setupIntents.retrieve(session.setup_intent);
+        if (si?.payment_method) {
+          await stripe.paymentMethods.detach(si.payment_method);
+        }
+      } else if (session.payment_intent) {
+        // If you ever use payment mode in the future, you could cancel here too,
+        // but we’ll avoid touching money unless you explicitly want that.
+        // const pi = await stripe.paymentIntents.retrieve(session.payment_intent);
+      }
+    } catch (e) {
+      console.error('Optional detach cleanup error (non-fatal):', e.message);
     }
 
-    // Optional email
+    // 4) Optional email notification
     const resend = getResendClient();
     if (resend && customerEmail) {
-      await resend.emails.send({
-        from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
-        to: customerEmail,
-        subject: 'Order Request Declined',
-        html: `
-          <p>Hi ${customerName || 'there'},</p>
-          <p>We’re unable to proceed with your order request.</p>
-          <p>Your card details were not charged and have been removed.</p>
-        `,
-      });
+      try {
+        await resend.emails.send({
+          from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
+          to: customerEmail,
+          subject: 'Order Request Declined',
+          html: `
+            <p>Hi ${customerName || 'there'},</p>
+            <p>We’re unable to proceed with your order request.</p>
+            <p>No charge was made, and your card details will not be kept on file.</p>
+          `,
+        });
+      } catch (e) {
+        console.error('Email error:', e.message);
+      }
     }
 
     return {
       statusCode: 200,
-      headers: cors,
+      headers: { 'Content-Type': 'application/json', ...cors },
       body: JSON.stringify({
         success: true,
-        message: 'SetupIntent cancelled and payment method removed',
-        setupIntentId,
+        message: 'Checkout Session expired (declined)',
+        sessionId,
+        sessionStatus: expired?.status || session.status,
       }),
     };
   } catch (err) {
-    console.error(err);
+    console.error('Decline error:', err);
     return {
       statusCode: 500,
       headers: cors,
