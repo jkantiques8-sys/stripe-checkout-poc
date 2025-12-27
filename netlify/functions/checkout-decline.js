@@ -90,7 +90,6 @@ exports.handler = async (event) => {
     const customerName = decoded.customerName || decoded.name || sessionName || '';
 
     // Expire the Checkout Session (Stripe-required for Checkout-created SetupIntents)
-    // If it’s already complete/expired, Stripe may throw—don’t fail the whole decline.
     let expired = null;
     let expireError = null;
     try {
@@ -114,18 +113,21 @@ exports.handler = async (event) => {
       console.error('Optional detach cleanup error (non-fatal):', e.message);
     }
 
-    // Email notification (with explicit diagnostics)
-    let emailSent = false;
-    let emailError = null;
-    let emailTo = customerEmail || null;
-    let resendId = null;
-
+    // Email notification (with REAL diagnostics)
     const resend = getResendClient();
 
-    // Optional debug BCC (set this in Netlify env vars temporarily)
-    // Example: DECLINE_DEBUG_BCC=orders@kraustables.com
     const debugBccRaw = (process.env.DECLINE_DEBUG_BCC || '').trim();
     const debugBcc = debugBccRaw && debugBccRaw.includes('@') ? debugBccRaw : null;
+
+    let emailTo = customerEmail || null;
+    let emailSent = false;
+    let emailError = null;
+
+    // Resend diagnostics
+    let resendId = null;
+    let resendError = null;
+    let resendData = null;
+    let resendRawKeys = null;
 
     if (!process.env.RESEND_API_KEY) {
       emailError = 'RESEND_API_KEY missing in environment';
@@ -136,6 +138,7 @@ exports.handler = async (event) => {
     } else {
       try {
         const subjectTag = sessionId ? sessionId.slice(-8) : 'request';
+
         const result = await resend.emails.send({
           from: "Kraus' Tables & Chairs <orders@kraustablesandchairs.com>",
           to: emailTo,
@@ -143,7 +146,6 @@ exports.handler = async (event) => {
           reply_to: "Kraus' Tables & Chairs <orders@kraustables.com>",
           subject: `Order Request Declined (${subjectTag})`,
           headers: {
-            'X-Kraus-Flow': decoded.flow || decoded.flowType || 'unknown',
             'X-Kraus-SessionId': sessionId,
           },
           html: `
@@ -153,12 +155,34 @@ exports.handler = async (event) => {
           `,
         });
 
-        // Resend typically returns an object with an id
-        resendId = result?.id || null;
-        emailSent = true;
+        // Resend SDKs differ in return shape. Normalize:
+        // Possible shapes:
+        // 1) { id: '...' }
+        // 2) { data: { id: '...' }, error: null }
+        // 3) { data: null, error: { ... } }
+        resendRawKeys = result ? Object.keys(result) : null;
+        resendData = result?.data ?? null;
+        resendError = result?.error ?? null;
+
+        resendId =
+          result?.id ||
+          result?.data?.id ||
+          null;
+
+        if (resendError) {
+          emailError = typeof resendError === 'string' ? resendError : (resendError.message || JSON.stringify(resendError));
+          emailSent = false;
+        } else if (resendId) {
+          emailSent = true;
+        } else {
+          // No error, but also no id — treat as not-sent and surface details
+          emailSent = false;
+          emailError = 'Resend returned no id (unknown delivery state)';
+        }
       } catch (e) {
+        emailSent = false;
         emailError = e.message;
-        console.error('Email error:', e.message);
+        console.error('Email exception:', e.message);
       }
     }
 
@@ -170,14 +194,18 @@ exports.handler = async (event) => {
         message: 'Checkout Session expired (declined)',
         sessionId,
         sessionStatus: expired?.status || session.status,
-        // diagnostics you can remove later
+        // Stripe diagnostics
         expireError,
         detachError,
-        emailSent,
-        emailTo,
+        // Email diagnostics
         debugBccEnabled: Boolean(debugBcc),
-        resendId,
+        emailTo,
+        emailSent,
         emailError,
+        resendId,
+        resendError,
+        resendData,
+        resendRawKeys,
       }),
     };
   } catch (err) {
