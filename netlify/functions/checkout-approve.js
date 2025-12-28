@@ -8,6 +8,32 @@ const jwt = require('jsonwebtoken');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
 
+
+// --- KRAUS: NY date helpers (server-authoritative) ---
+function nyTodayYMD() {
+  // Returns YYYY-MM-DD for "today" in America/New_York
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+function parseNYDate(ymd) {
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(ymd || "").trim())) return null;
+  const [y, m, d] = String(ymd).trim().split("-").map(Number);
+  return { y, m, d };
+}
+function compareYMD(a, b) {
+  if (!a || !b) return null;
+  if (a.y !== b.y) return a.y < b.y ? -1 : 1;
+  if (a.m !== b.m) return a.m < b.m ? -1 : 1;
+  if (a.d !== b.d) return a.d < b.d ? -1 : 1;
+  return 0;
+}
+function dayDiffNY(a, b) {
+  // Whole calendar-day difference between two {y,m,d} dates
+  if (!a || !b) return null;
+  const da = Date.UTC(a.y, a.m - 1, a.d);
+  const db = Date.UTC(b.y, b.m - 1, b.d);
+  return Math.round((db - da) / 86400000);
+}
+
 let twilioClient = null;
 let resendClient = null;
 
@@ -250,10 +276,25 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing setupIntentId (not present in token or session)' }) };
     }
 
-    const dropoffDateStr = String(md.dropoff_date || decoded.orderDetails?.dropoff_date || '');
-    const dropoffDate = parseYYYYMMDD(dropoffDateStr);
-    const today = new Date();
-    const daysUntilDropoff = dropoffDate ? daysBetween(today, dropoffDate) : 999;
+        const dropoffDateStr = String(md.dropoff_date || decoded.orderDetails?.dropoff_date || '');
+    const pickupDateStr  = String(md.pickup_date  || decoded.orderDetails?.pickup_date  || '');
+
+    const todayNY = parseNYDate(nyTodayYMD());
+    const dropoffNY = parseNYDate(dropoffDateStr);
+    const pickupNY  = parseNYDate(pickupDateStr);
+
+    if (!dropoffNY) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Cannot approve: missing or invalid dropoff date' }) };
+    }
+    if (compareYMD(dropoffNY, todayNY) < 0) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Cannot approve: dropoff date is in the past (NY time)' }) };
+    }
+    if (pickupNY && compareYMD(pickupNY, dropoffNY) < 0) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Cannot approve: pickup date is before dropoff date' }) };
+    }
+
+    const daysUntilDropoff = dayDiffNY(todayNY, dropoffNY);
+
 
     const rushCents = Number(md.rush_cents || 0);
     const isRush = Number.isFinite(rushCents) && rushCents > 0;
