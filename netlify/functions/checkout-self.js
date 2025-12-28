@@ -2,6 +2,32 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const crypto = require('crypto');
 
+
+// --- KRAUS: NY date helpers (server-authoritative) ---
+function nyTodayYMD() {
+  // Returns YYYY-MM-DD for "today" in America/New_York
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+function parseNYDate(ymd) {
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(ymd || "").trim())) return null;
+  const [y, m, d] = String(ymd).trim().split("-").map(Number);
+  return { y, m, d };
+}
+function compareYMD(a, b) {
+  if (!a || !b) return null;
+  if (a.y !== b.y) return a.y < b.y ? -1 : 1;
+  if (a.m !== b.m) return a.m < b.m ? -1 : 1;
+  if (a.d !== b.d) return a.d < b.d ? -1 : 1;
+  return 0;
+}
+function dayDiffNY(a, b) {
+  // Whole calendar-day difference between two {y,m,d} dates
+  if (!a || !b) return null;
+  const da = Date.UTC(a.y, a.m - 1, a.d);
+  const db = Date.UTC(b.y, b.m - 1, b.d);
+  return Math.round((db - da) / 86400000);
+}
+
 // ---- Business settings (mirror the client; server is authoritative) ----
 const USD = v => Math.round(v);                // cents already
 const UNIT = 1000;                             // $10 per chair => 1000 cents
@@ -48,23 +74,29 @@ exports.handler = async (event) => {
     const clampedLight = Math.min(qtyLight, Math.max(0, MAX_QTY - clampedDark));
 
     const chairsSubtotalC = (clampedDark + clampedLight) * UNIT;
+    // --- dates (NY calendar days; server-authoritative) ---
+    const todayNY = parseNYDate(nyTodayYMD());
+    const pickupNY = parseNYDate(pickup_date);
+    const returnNY = parseNYDate(return_date);
 
-    // --- dates ---
-    const toDate = (s)=> s ? new Date(`${s}T00:00:00`) : null;
-    const pick = toDate(pickup_date);
-    const ret  = toDate(return_date);
+    if (!pickupNY || !returnNY) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid or missing rental dates' }) };
+    }
+    if (compareYMD(pickupNY, todayNY) < 0) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Pickup date cannot be in the past' }) };
+    }
+    if (compareYMD(returnNY, pickupNY) < 0) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Return date cannot be before pickup date' }) };
+    }
 
-    const daysBetween = (a,b)=> Math.round((b-a)/(1000*60*60*24));
-    let extDays = 0;
-    if (pick && ret) extDays = Math.max(0, daysBetween(pick, ret) - 1);
+    const rentalDays = dayDiffNY(pickupNY, returnNY);
+    const extDays = Math.max(0, (Number.isFinite(rentalDays) ? rentalDays : 0) - 1);
 
-    // rush: pickup is today (America/New_York)
+    // rush: pickup is today (America/New_York calendar day)
     let rushC = 0;
-    if (pick){
-      const now = new Date();
-      const ny = new Date(now.toLocaleString('en-US',{ timeZone:'America/New_York'}));
-      ny.setHours(0,0,0,0);
-      if (daysBetween(ny, pick) === 0) rushC = RUSH_FEE;
+    const daysUntilPickup = dayDiffNY(todayNY, pickupNY);
+    if (Number.isFinite(daysUntilPickup) && daysUntilPickup === 0) {
+      rushC = RUSH_FEE;
     }
 
     const extFeeC = Math.round(chairsSubtotalC * EXT_RATE * extDays);
