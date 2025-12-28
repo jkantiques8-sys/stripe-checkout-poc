@@ -2,6 +2,32 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const crypto = require('crypto');
 
+
+// --- KRAUS: NY date helpers (server-authoritative) ---
+function nyTodayYMD() {
+  // Returns YYYY-MM-DD for "today" in America/New_York
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+function parseNYDate(ymd) {
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(ymd || "").trim())) return null;
+  const [y, m, d] = String(ymd).trim().split("-").map(Number);
+  return { y, m, d };
+}
+function compareYMD(a, b) {
+  if (!a || !b) return null;
+  if (a.y !== b.y) return a.y < b.y ? -1 : 1;
+  if (a.m !== b.m) return a.m < b.m ? -1 : 1;
+  if (a.d !== b.d) return a.d < b.d ? -1 : 1;
+  return 0;
+}
+function dayDiffNY(a, b) {
+  // Whole calendar-day difference between two {y,m,d} dates
+  if (!a || !b) return null;
+  const da = Date.UTC(a.y, a.m - 1, a.d);
+  const db = Date.UTC(b.y, b.m - 1, b.d);
+  return Math.round((db - da) / 86400000);
+}
+
 // ---- Business settings (prices in cents) ----
 const USD = v => Math.round(v);
 
@@ -186,26 +212,31 @@ exports.handler = async (event) => {
       .map((it) => `${it.name} × ${it.qty}`)
       .join('\n');
 
+
+// --- KRAUS: NY date sanity checks (server-authoritative calendar days) ---
+const todayNY = parseNYDate(nyTodayYMD());
+const dropoffNY = parseNYDate(schedule.dropoff_date);
+const pickupNY  = parseNYDate(schedule.pickup_date);
+
+if (!dropoffNY || !pickupNY) {
+  return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid or missing rental dates' }) };
+}
+if (compareYMD(dropoffNY, todayNY) < 0) {
+  return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Dropoff date cannot be in the past' }) };
+}
+if (compareYMD(pickupNY, dropoffNY) < 0) {
+  return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Pickup date cannot be before dropoff date' }) };
+}
+
 // --- Calculate delivery fee (30% of items) ---
     const deliveryC = Math.round(productsSubtotalC * DELIVERY_RATE);
 
     // --- Manhattan congestion surcharge (flat $75 for Manhattan ZIPs) ---
     const zip5 = normalizeZip(location.zip);
     const congestionC = isManhattanZip(zip5) ? CONGESTION_FEE_CENTS : 0;
-
-    // --- Rush fee (if drop-off is within 2 days) ---
-    const toDate = (s) => s ? new Date(`${s}T00:00:00`) : null;
-    const dropoffDate = toDate(schedule.dropoff_date);
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-
-    const daysBetween = (a, b) => {
-      if (!a || !b) return 0;
-      return Math.max(0, Math.round((b - a) / (1000 * 60 * 60 * 24)));
-    };
-
-    const daysUntilDropoff = daysBetween(todayDate, dropoffDate);
-    const rushC = (dropoffDate && daysUntilDropoff <= 2)
+    // --- Rush fee (if drop-off is within 2 days; NY calendar days) ---
+    const daysUntilDropoff = dayDiffNY(todayNY, dropoffNY);
+    const rushC = (Number.isFinite(daysUntilDropoff) && daysUntilDropoff <= 2)
       ? Math.max(10000, Math.round(productsSubtotalC * 0.10))  // max of $100 or 10% of items
       : 0;
 
@@ -229,9 +260,8 @@ exports.handler = async (event) => {
     }
 
     // Pickup time slot fee (no base fee for prompt if same day)
-    const pickupDate = toDate(schedule.pickup_date);
-    const sameDay = dropoffDate && pickupDate &&
-                    (schedule.dropoff_date === schedule.pickup_date);
+    // (NY calendar dates already parsed above)
+    const sameDay = compareYMD(dropoffNY, pickupNY) === 0;
 
     const pickupType = schedule.pickup_timeslot_type || 'flex';
     const pickupValue = schedule.pickup_timeslot_value || '';
@@ -253,7 +283,7 @@ exports.handler = async (event) => {
     }
 
     // --- Extended rental fee (15% per extra day after first day) ---
-    const rentalDays = daysBetween(dropoffDate, pickupDate);
+        const rentalDays = dayDiffNY(dropoffNY, pickupNY);
     const extraDays = Math.max(0, rentalDays - 1);
     const extendedC = Math.round(productsSubtotalC * EXTENDED_RATE * extraDays);
 
