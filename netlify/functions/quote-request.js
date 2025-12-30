@@ -1,15 +1,9 @@
 // netlify/functions/quote-request.js
-// Request-only fallback endpoint:
+// Request-only fallback endpoint (Resend):
 // - Receives JSON payload from Squarespace forms
 // - Emails OWNER + CUSTOMER via Resend
+// - HTML emails with column tables (items + summary)
 // - No Stripe checkout, no DB
-//
-// Supports your current snake_case payload keys:
-//   customer.{name,phone,email}
-//   location.{street,address2,city,state,zip,notes}
-//   schedule.{dropoff_date,dropoff_timeslot_type,dropoff_timeslot_value, pickup_date, ...}
-//   items[{sku,qty}]  (optionally: name, unitPrice, lineTotal)
-//   pricing.{items,delivery,rush,congestion,dropFee,pickFee,extraDays,extended,minFee,tax,total,isRush,deposit,remaining}
 
 const headers = {
   "Access-Control-Allow-Origin": "*",
@@ -26,32 +20,35 @@ const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim())
 const fmtMoney = (v) => {
   if (v === null || v === undefined || v === "") return "";
   const n = Number(v);
-  if (!Number.isFinite(n)) return safe(v);
+  if (!Number.isFinite(n)) return "";
   return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 };
 
-// ✅ EDIT THIS MAP to match your current catalog pricing.
-// These are unit prices (per 1 qty).
+const fmtMoneyOrDash = (v) => {
+  const s = fmtMoney(v);
+  return s || "—";
+};
+
+// EDIT THIS MAP to match your catalog unit prices.
+// If a SKU isn't here AND the payload doesn't provide unitPrice, unit will show "—".
 const SKU_PRICE_MAP = {
   "table-chair-set": 160,
   "vintage-drafting-table": 275,
   "industrial-garment-rack": 175,
-  // Add the rest of your SKUs here:
-  // "vintage-folding-chair-dark": 12,
-  // "vintage-folding-chair-light": 12,
-  // "handmade-banquet-table-6ft": 195,
+  // add the rest...
+};
+
+const SKU_NAME_MAP = {
+  "table-chair-set": "Table + Chair Set",
+  "vintage-drafting-table": "Vintage Drafting Table",
+  "industrial-garment-rack": "Industrial Garment Rack",
+  // add the rest...
 };
 
 const titleizeSku = (skuRaw) => {
   const sku = safe(skuRaw).trim();
   if (!sku) return "";
-
-  const map = {
-    "table-chair-set": "Table + Chair Set",
-    "vintage-drafting-table": "Vintage Drafting Table",
-    "industrial-garment-rack": "Industrial Garment Rack",
-  };
-  if (map[sku]) return map[sku];
+  if (SKU_NAME_MAP[sku]) return SKU_NAME_MAP[sku];
 
   const words = sku.replace(/[_-]+/g, " ").split(" ").filter(Boolean);
   return words
@@ -68,10 +65,8 @@ const getSchedule = (p) => {
   const s = p?.schedule || {};
   const dropDate = s.dropoff_date || s.dropoffDate || "";
   const pickDate = s.pickup_date || s.pickupDate || "";
-
   const dropType = s.dropoff_timeslot_type || s.dropoffTimeslotType || "";
   const dropVal = s.dropoff_timeslot_value || s.dropoffTimeslotValue || "";
-
   const pickType = s.pickup_timeslot_type || s.pickupTimeslotType || "";
   const pickVal = s.pickup_timeslot_value || s.pickupTimeslotValue || "";
 
@@ -102,14 +97,15 @@ const getAddress = (p) => {
   };
 };
 
-// Normalize items and compute unitPrice/lineTotal if possible
 const normalizeItems = (p) => {
   const items = Array.isArray(p?.items) ? p.items : [];
   return items
     .map((it) => {
       const sku = safe(it.sku || it.id || "").trim();
       const qty = Number(it.qty ?? it.quantity ?? 1) || 1;
-      const name = safe(it.name || it.title || it.productName) || titleizeSku(sku);
+
+      const name =
+        safe(it.name || it.title || it.productName).trim() || titleizeSku(sku) || sku || "Item";
 
       // Prefer values from payload if present
       const unitFromPayload = it.unitPrice ?? it.unit_price ?? it.price;
@@ -130,52 +126,124 @@ const normalizeItems = (p) => {
     .filter((it) => it.qty > 0);
 };
 
-const buildPricingLines = (pricing) => {
-  const lines = [];
-  const add = (label, val) => {
+const buildSummaryRows = (pricing) => {
+  const rows = [];
+  const add = (label, val, opts = {}) => {
     const n = Number(val);
     if (!Number.isFinite(n) || Math.abs(n) < 0.000001) return;
-    lines.push({ label, value: n });
+    rows.push({ label, value: n, ...opts });
   };
 
-  // These names match your payload screenshot
+  // Try to match what you show on the page
   add("Items subtotal", pricing?.items);
-  add("Delivery fee", pricing?.delivery);
-  add("Rush fee", pricing?.rush);
+  add("Delivery fee (30%)", pricing?.delivery);
+  add("Rush fee (≤2 days)", pricing?.rush);
   add("Congestion fee", pricing?.congestion);
   add("Delivery time slot fee", pricing?.dropFee);
   add("Pickup time slot fee", pricing?.pickFee);
   add("Extended rental fee", pricing?.extended);
-  add("Minimum fee adjustment", pricing?.minFee);
+  add("Minimum surcharge", pricing?.minFee);
 
-  // Tax + Total at the end (even if 0 tax, include if total present)
-  const taxN = Number(pricing?.tax);
-  if (Number.isFinite(taxN) && Math.abs(taxN) >= 0.000001) lines.push({ label: "Sales tax", value: taxN });
+  const tax = Number(pricing?.tax);
+  if (Number.isFinite(tax) && Math.abs(tax) >= 0.000001) rows.push({ label: "Sales tax", value: tax });
 
-  const totalN = Number(pricing?.total);
-  if (Number.isFinite(totalN)) lines.push({ label: "Total", value: totalN, isTotal: true });
+  const total = Number(pricing?.total);
+  if (Number.isFinite(total)) rows.push({ label: "Total", value: total, isTotal: true });
 
-  return lines;
+  return rows;
 };
 
-const buildItemLines = (items) => {
-  const lines = [];
-  for (const it of items) {
-    const unitOk = Number.isFinite(it.unitPrice);
-    const lineOk = Number.isFinite(it.lineTotal);
+const escapeHtml = (s) =>
+  safe(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
-    if (unitOk && lineOk) {
-      lines.push(`- ${it.name} (x${it.qty}) — ${fmtMoney(it.unitPrice)} ea — ${fmtMoney(it.lineTotal)}`);
-    } else if (unitOk) {
-      lines.push(`- ${it.name} (x${it.qty}) — ${fmtMoney(it.unitPrice)} ea`);
-    } else {
-      lines.push(`- ${it.name} (x${it.qty})`);
-    }
-  }
-  return lines;
+const htmlTableItems = (items) => {
+  const rows = items
+    .map((it) => {
+      const unit = Number.isFinite(it.unitPrice) ? fmtMoney(it.unitPrice) : "—";
+      const line = Number.isFinite(it.lineTotal) ? fmtMoney(it.lineTotal) : "—";
+      return `
+        <tr>
+          <td style="padding:8px 0; border-bottom:1px solid #eee;">
+            ${escapeHtml(it.name)}
+          </td>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap;">
+            ${it.qty}
+          </td>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap;">
+            ${unit}
+          </td>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap;">
+            ${line}
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; font-size:14px;">
+      <thead>
+        <tr>
+          <th align="left" style="padding:6px 0; border-bottom:2px solid #ddd;">Item</th>
+          <th align="right" style="padding:6px 0; border-bottom:2px solid #ddd; white-space:nowrap;">Qty</th>
+          <th align="right" style="padding:6px 0; border-bottom:2px solid #ddd; white-space:nowrap;">Unit</th>
+          <th align="right" style="padding:6px 0; border-bottom:2px solid #ddd; white-space:nowrap;">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
 };
 
-async function sendResend({ apiKey, from, to, subject, text }) {
+const htmlTableSummary = (rows) => {
+  if (!rows.length) return "";
+
+  const body = rows
+    .map((r) => {
+      const isTotal = !!r.isTotal;
+      return `
+        <tr>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; ${isTotal ? "font-weight:700;" : ""}">
+            ${escapeHtml(r.label)}
+          </td>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap; ${isTotal ? "font-weight:700;" : ""}">
+            ${fmtMoneyOrDash(r.value)}
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; font-size:14px;">
+      <tbody>
+        ${body}
+      </tbody>
+    </table>
+  `;
+};
+
+const textItems = (items) =>
+  items
+    .map((it) => {
+      const unitOk = Number.isFinite(it.unitPrice);
+      const lineOk = Number.isFinite(it.lineTotal);
+      const unitTxt = unitOk ? ` — ${fmtMoney(it.unitPrice)} ea` : "";
+      const lineTxt = lineOk ? ` — ${fmtMoney(it.lineTotal)}` : "";
+      return `- ${it.name} (x${it.qty})${unitTxt}${lineTxt}`;
+    })
+    .join("\n");
+
+const textSummary = (rows) =>
+  rows.map((r) => `- ${r.label}: ${fmtMoneyOrDash(r.value)}`).join("\n");
+
+async function sendResend({ apiKey, from, to, subject, text, html }) {
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -187,6 +255,7 @@ async function sendResend({ apiKey, from, to, subject, text }) {
       to: Array.isArray(to) ? to : [to],
       subject,
       text,
+      html,
     }),
   });
 
@@ -234,84 +303,127 @@ export default async (req) => {
   const schedule = getSchedule(p);
   const addr = getAddress(p);
   const pricing = p?.pricing || p?.totals || {};
+  const summaryRows = buildSummaryRows(pricing);
 
-  // Build shared blocks
-  const itemLines = buildItemLines(items);
-  const pricingLines = buildPricingLines(pricing);
+  // ---------- OWNER EMAIL ----------
+  const ownerText =
+    `Request ID: ${requestId}\n` +
+    `Flow: ${flow}\n` +
+    `Created: ${createdAt}\n` +
+    (p?.client_order_token ? `Client token: ${safe(p.client_order_token)}\n` : "") +
+    `\nCustomer:\n` +
+    `- Name: ${customerName || "(not provided)"}\n` +
+    `- Email: ${customerEmail}\n` +
+    (customer.phone ? `- Phone: ${safe(customer.phone)}\n` : "") +
+    `\nSchedule:\n` +
+    (schedule.dropDate ? `- Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
+    (schedule.pickDate ? `- Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n` : "") +
+    (addr.line1 || addr.city || addr.zip
+      ? `\nAddress:\n` +
+        (addr.line1 ? `- ${addr.line1}\n` : "") +
+        (addr.line2 ? `- ${addr.line2}\n` : "") +
+        `- ${addr.city}${addr.state ? ", " + addr.state : ""} ${addr.zip}\n` +
+        (addr.notes ? `- Notes: ${addr.notes}\n` : "")
+      : "") +
+    `\nItems:\n${textItems(items)}\n` +
+    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "");
 
-  const pricingText = pricingLines.length
-    ? pricingLines
-        .map((x) => (x.isTotal ? `- ${x.label}: ${fmtMoney(x.value)}` : `- ${x.label}: ${fmtMoney(x.value)}`))
-        .join("\n")
-    : "";
+  const ownerHtml = `
+    <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
+      <h2 style="margin:0 0 10px;">New Request (manual)</h2>
+      <p style="margin:0 0 14px;">
+        <strong>Request ID:</strong> ${escapeHtml(requestId)}<br>
+        <strong>Flow:</strong> ${escapeHtml(flow)}<br>
+        <strong>Created:</strong> ${escapeHtml(createdAt)}
+        ${p?.client_order_token ? `<br><strong>Client token:</strong> ${escapeHtml(p.client_order_token)}` : ""}
+      </p>
 
-  // OWNER EMAIL (no RAW JSON)
-  const ownerLines = [];
-  ownerLines.push(`Request ID: ${requestId}`);
-  ownerLines.push(`Flow: ${flow}`);
-  ownerLines.push(`Created: ${createdAt}`);
-  if (p?.client_order_token) ownerLines.push(`Client token: ${safe(p.client_order_token)}`);
-  ownerLines.push("");
-  ownerLines.push("Customer:");
-  ownerLines.push(`- Name: ${customerName || "(not provided)"}`);
-  ownerLines.push(`- Email: ${customerEmail}`);
-  if (customer.phone) ownerLines.push(`- Phone: ${safe(customer.phone)}`);
-  ownerLines.push("");
-  ownerLines.push("Schedule:");
-  if (schedule.dropDate) ownerLines.push(`- Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}`);
-  if (schedule.pickDate) ownerLines.push(`- Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}`);
-  ownerLines.push("");
+      <h3 style="margin:18px 0 8px;">Contact Info</h3>
+      <p style="margin:0 0 14px;">
+        <strong>Name:</strong> ${escapeHtml(customerName || "(not provided)")}<br>
+        <strong>Email:</strong> ${escapeHtml(customerEmail)}
+        ${customer.phone ? `<br><strong>Phone:</strong> ${escapeHtml(customer.phone)}` : ""}
+      </p>
 
-  if (addr.line1 || addr.city || addr.zip) {
-    ownerLines.push("Address:");
-    if (addr.line1) ownerLines.push(`- ${addr.line1}`);
-    if (addr.line2) ownerLines.push(`- ${addr.line2}`);
-    ownerLines.push(`- ${addr.city}${addr.state ? ", " + addr.state : ""} ${addr.zip}`);
-    if (addr.notes) ownerLines.push(`- Notes: ${addr.notes}`);
-    ownerLines.push("");
-  }
+      <h3 style="margin:18px 0 8px;">Schedule</h3>
+      <p style="margin:0 0 14px;">
+        ${schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
+        ${schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
+      </p>
 
-  ownerLines.push("Items:");
-  ownerLines.push(itemLines.join("\n"));
-  ownerLines.push("");
+      ${
+        addr.line1 || addr.city || addr.zip
+          ? `
+        <h3 style="margin:18px 0 8px;">Address</h3>
+        <p style="margin:0 0 14px;">
+          ${escapeHtml(addr.line1)}${addr.line2 ? `<br>${escapeHtml(addr.line2)}` : ""}<br>
+          ${escapeHtml(addr.city)}${addr.state ? ", " + escapeHtml(addr.state) : ""} ${escapeHtml(addr.zip)}
+          ${addr.notes ? `<br><strong>Notes:</strong> ${escapeHtml(addr.notes)}` : ""}
+        </p>
+      `
+          : ""
+      }
 
-  if (pricingText) {
-    ownerLines.push("Order Summary (as shown to customer):");
-    ownerLines.push(pricingText);
-    ownerLines.push("");
-  }
+      <h3 style="margin:18px 0 8px;">Items</h3>
+      ${htmlTableItems(items)}
 
-  const ownerText = ownerLines.join("\n");
+      ${
+        summaryRows.length
+          ? `
+        <h3 style="margin:18px 0 8px;">Order Summary</h3>
+        ${htmlTableSummary(summaryRows)}
+      `
+          : ""
+      }
+    </div>
+  `;
 
-  // CUSTOMER EMAIL
-  const custLines = [];
-  custLines.push(`Hi${customerName ? " " + customerName : ""},`);
-  custLines.push("");
-  custLines.push("We received your request and it is pending approval.");
-  custLines.push("We’ll review availability and follow up shortly.");
-  custLines.push("If approved, we’ll email you an invoice to complete booking.");
-  custLines.push("");
-  custLines.push(`Request ID: ${requestId}`);
-  custLines.push("");
+  // ---------- CUSTOMER EMAIL ----------
+  const customerText =
+    `Hi${customerName ? " " + customerName : ""},\n\n` +
+    `We received your request and it is pending approval.\n` +
+    `We’ll review availability and follow up shortly.\n` +
+    `If approved, we’ll email you an invoice to complete booking.\n\n` +
+    `Request ID: ${requestId}\n\n` +
+    (schedule.dropDate ? `Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
+    (schedule.pickDate ? `Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n` : "\n") +
+    `Items:\n${textItems(items)}\n` +
+    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
+    `\nThanks,\nKraus' Tables & Chairs`;
 
-  if (schedule.dropDate) custLines.push(`Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}`);
-  if (schedule.pickDate) custLines.push(`Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}`);
-  if (schedule.dropDate || schedule.pickDate) custLines.push("");
+  const customerHtml = `
+    <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
+      <p style="margin:0 0 12px;">Hi${customerName ? " " + escapeHtml(customerName) : ""},</p>
 
-  custLines.push("Items:");
-  custLines.push(itemLines.join("\n"));
+      <p style="margin:0 0 12px;">
+        We received your request and it is pending approval.<br>
+        We’ll review availability and follow up shortly.<br>
+        <strong>If approved, we’ll email you an invoice to complete booking.</strong>
+      </p>
 
-  if (pricingText) {
-    custLines.push("");
-    custLines.push("Order Summary:");
-    custLines.push(pricingText);
-  }
+      <p style="margin:0 0 14px;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
 
-  custLines.push("");
-  custLines.push("Thanks,");
-  custLines.push("Kraus' Tables & Chairs");
+      <h3 style="margin:18px 0 8px;">Schedule</h3>
+      <p style="margin:0 0 14px;">
+        ${schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
+        ${schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
+      </p>
 
-  const customerText = custLines.join("\n");
+      <h3 style="margin:18px 0 8px;">Items</h3>
+      ${htmlTableItems(items)}
+
+      ${
+        summaryRows.length
+          ? `
+        <h3 style="margin:18px 0 8px;">Order Summary</h3>
+        ${htmlTableSummary(summaryRows)}
+      `
+          : ""
+      }
+
+      <p style="margin:18px 0 0;">Thanks,<br>Kraus' Tables & Chairs</p>
+    </div>
+  `;
 
   try {
     await sendResend({
@@ -320,6 +432,7 @@ export default async (req) => {
       to: OWNER_EMAIL,
       subject: `NEW REQUEST (manual) — ${customerName || customerEmail} — ${requestId}`,
       text: ownerText,
+      html: ownerHtml,
     });
 
     await sendResend({
@@ -328,6 +441,7 @@ export default async (req) => {
       to: customerEmail,
       subject: `KRAUS — Request received (pending approval) — ${requestId}`,
       text: customerText,
+      html: customerHtml,
     });
 
     return json(200, { ok: true, requestId });
