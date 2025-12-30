@@ -124,7 +124,7 @@ async function sendEmailApproved({ to, customerName, paidNowCents, balanceCents,
 
   const balanceLine = balanceCents > 0
     ? `<p><strong>Remaining balance:</strong> ${balanceStr}${dropoffDateStr ? ` (for drop-off ${dropoffDateStr})` : ''}</p>
-       <p>We will automatically charge the remaining balance the day before your drop-off.</p>`
+       <p>We will automatically charge the remaining balance the day before your delivery.</p>`
     : `<p><strong>Remaining balance:</strong> $0.00 (paid in full)</p>`;
 
   await resend.emails.send({
