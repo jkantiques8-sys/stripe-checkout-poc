@@ -138,7 +138,8 @@ const formatTimeSlot = (value) => {
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 function getBaseOrigin(event) {
   const origin = (event.headers?.origin || event.headers?.Origin || '').trim();
