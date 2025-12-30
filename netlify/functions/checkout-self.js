@@ -45,40 +45,57 @@ const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
-
-
 function getBaseOrigin(event) {
-  const envSite = (process.env.SITE_URL || '').trim();
-  if (envSite) {
-    try { return new URL(envSite).origin; } catch {}
-  }
   const origin = (event.headers?.origin || event.headers?.Origin || '').trim();
   if (origin) return origin;
   const ref = (event.headers?.referer || event.headers?.Referer || '').trim();
   if (ref) {
     try { return new URL(ref).origin; } catch {}
   }
-  // Final fallback: preserve prior behavior (example.com) if nothing else is available
+  const envSite = (process.env.SITE_URL || '').trim();
+  if (envSite) {
+    try { return new URL(envSite).origin; } catch {}
+  }
   try { return new URL('https://example.com').origin; } catch { return 'https://example.com'; }
 }
 
-function normalizeAndValidateRedirect(urlStr, baseOrigin, fieldName) {
+function getAllowedOrigins(event) {
+  const origins = new Set();
+  const base = getBaseOrigin(event);
+  if (base) origins.add(base);
+
+  const envSite = (process.env.SITE_URL || '').trim();
+  if (envSite) {
+    try { origins.add(new URL(envSite).origin); } catch {}
+  }
+
+  const extra = (process.env.ALLOWED_REDIRECT_ORIGINS || '').split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  for (const s of extra) {
+    try { origins.add(new URL(s).origin); } catch {}
+  }
+  return origins;
+}
+
+function normalizeAndValidateRedirect(urlStr, allowedOrigins, baseOrigin, fieldName) {
   if (!urlStr) return null;
   const s = String(urlStr).trim();
   if (!s) return null;
 
-  // Allow relative paths
   let u;
   try {
     u = s.startsWith('/') ? new URL(s, baseOrigin) : new URL(s);
   } catch {
     throw new Error(`Invalid ${fieldName}`);
   }
-  if (u.origin !== baseOrigin) {
-    throw new Error(`${fieldName} must be on ${baseOrigin}`);
+
+  if (!allowedOrigins.has(u.origin)) {
+    throw new Error(`${fieldName} must be on one of: ${Array.from(allowedOrigins).join(', ')}`);
   }
   return u.toString();
 }
+
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -204,7 +221,7 @@ exports.handler = async (event) => {
       },
       line_items,
       success_url: safeSuccessUrl,
-      cancel_url:  safeCancelUrl,
+      cancel_url: safeCancelUrl,
       customer_email: customer.email || undefined,
       metadata: {
         flow: 'self_service',               // identify this flow for the webhook
