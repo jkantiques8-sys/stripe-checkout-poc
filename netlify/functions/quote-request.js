@@ -32,17 +32,33 @@ const fmtMoneyOrDash = (v) => {
 // EDIT THIS MAP to match your catalog unit prices.
 // If a SKU isn't here AND the payload doesn't provide unitPrice, unit will show "—".
 const SKU_PRICE_MAP = {
+  "antique-work-bench": 400,
+  "ASH-NYC-steel-table": 400,
+  "dark": 10,
+  "end-leaves": 50,
+  "folding-table": 100,
+  "industrial-bar": 400,
+  "industrial-cocktail-table": 50,
+  "industrial-garment-rack": 100,
+  "light": 10,
+  "MCM-etched-tulip-table": 250,
   "table-chair-set": 160,
-  "vintage-drafting-table": 275,
-  "industrial-garment-rack": 175,
-  // add the rest...
+  "vintage-drafting-table": 100,
 };
 
 const SKU_NAME_MAP = {
-  "table-chair-set": "Table + Chair Set",
-  "vintage-drafting-table": "Vintage Drafting Table",
+  "antique-work-bench": "Antique Work Bench",
+  "ASH-NYC-steel-table": "ASH NYC Standard Steel Table",
+  "dark": "Vintage Folding Chairs — Dark",
+  "end-leaves": "End Leaves (pair)",
+  "folding-table": "Folding Farm Table",
+  "industrial-bar": "Industrial Serving Bar",
+  "industrial-cocktail-table": "Industrial Cocktail Table",
   "industrial-garment-rack": "Industrial Garment Rack",
-  // add the rest...
+  "light": "Vintage Folding Chairs — Light",
+  "MCM-etched-tulip-table": "MCM Etched Tulip Table",
+  "table-chair-set": "Table + 6 Chairs",
+  "vintage-drafting-table": "Vintage Drafting Table",
 };
 
 const titleizeSku = (skuRaw) => {
