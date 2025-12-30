@@ -110,6 +110,15 @@ exports.handler = async (event) => {
     const { items = [], pickup_date, return_date, customer = {}, utm = {}, success_url, cancel_url, client_order_token } =
       JSON.parse(event.body || '{}');
 
+    const baseOrigin = getBaseOrigin(event);
+    const allowedOrigins = getAllowedOrigins(event, baseOrigin);
+    const safeSuccessUrl =
+      normalizeAndValidateRedirect(success_url, allowedOrigins, baseOrigin, 'success_url') ||
+      `${baseOrigin}/thank-you-self-service`;
+    const safeCancelUrl =
+      normalizeAndValidateRedirect(cancel_url, allowedOrigins, baseOrigin, 'cancel_url') ||
+      `${baseOrigin}/`;
+
     // --- sanitize items & quantities ---
     let qtyDark = 0, qtyLight = 0;
     for (const it of items) {
