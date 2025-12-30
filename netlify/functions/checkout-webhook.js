@@ -34,6 +34,61 @@ const getTwilioClient = () => {
   return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 };
 
+// ==== Minimal failure alerting (best-effort) ==================================
+// Sends a short alert to OWNER_EMAIL and/or OWNER_PHONE if configured.
+// This is intentionally lightweight: console logs remain the main source of truth.
+async function sendFailureAlert({ where, error, stripeEvent, extra = {} }) {
+  const OWNER_EMAIL = process.env.OWNER_EMAIL;
+  const OWNER_PHONE = process.env.OWNER_PHONE;
+  const FROM_EMAIL = process.env.FROM_EMAIL || OWNER_EMAIL;
+  const tw = getTwilioClient();
+
+  const ev = stripeEvent || {};
+  const obj = ev?.data?.object || {};
+  const summary = {
+    where,
+    message: error?.message || String(error || ''),
+    event_type: ev.type || '',
+    event_id: ev.id || '',
+    object_id: obj.id || '',
+    created: ev.created || '',
+    ...extra
+  };
+
+  const subject = `[KRAUS] Webhook alert: ${where}${ev.type ? ` (${ev.type})` : ''}`;
+  const bodyText = JSON.stringify(summary, null, 2);
+
+  // Email (Resend)
+  if (resend && OWNER_EMAIL && FROM_EMAIL) {
+    try {
+      await resend.emails.send({
+        from: FROM_EMAIL,
+        to: OWNER_EMAIL,
+        subject,
+        html: `<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap;">${escapeHtml(bodyText)}</pre>`
+      });
+      console.log('[ALERT] Failure email sent to owner');
+    } catch (e) {
+      console.error('[ALERT] Failed to send failure email:', e?.message || e);
+    }
+  }
+
+  // SMS (Twilio)
+  if (tw && OWNER_PHONE && process.env.TWILIO_PHONE_NUMBER) {
+    try {
+      const sms = `${subject}\n${(summary.message || '').slice(0, 220)}\n${summary.event_id ? `Event: ${summary.event_id}` : ''}`.trim();
+      await tw.messages.create({
+        from: process.env.TWILIO_PHONE_NUMBER,
+        to: OWNER_PHONE,
+        body: sms
+      });
+      console.log('[ALERT] Failure SMS sent to owner');
+    } catch (e) {
+      console.error('[ALERT] Failed to send failure SMS:', e?.message || e);
+    }
+  }
+}
+
 const SITE_URL =
   process.env.SITE_URL || 'https://enchanting-monstera-41f4df.netlify.app';
 
@@ -687,6 +742,7 @@ exports.handler = async (event, context) => {
     );
   } catch (err) {
     console.error('Webhook signature verification failed:', err.message);
+    await sendFailureAlert({ where: 'signature_verification_failed', error: err, stripeEvent: null, extra: { has_signature: Boolean(sig) } });
     return {
       statusCode: 400,
       body: JSON.stringify({ error: `Webhook Error: ${err.message}` })
@@ -713,6 +769,7 @@ exports.handler = async (event, context) => {
   }
 
 
+  try {
 // ---------------------------------------------------------------------
 // WEBHOOK DEDUPE (Google Sheets via Apps Script)
 // ---------------------------------------------------------------------
@@ -1409,6 +1466,13 @@ const orderDetails = {
     }
   } else {
     console.log('Resend not configured, skipping emails');
+  }
+
+  } catch (err) {
+    console.error('[checkout-webhook] processing error:', err);
+    await sendFailureAlert({ where: 'processing_error', error: err, stripeEvent });
+    // Return 500 so Stripe will retry (helps in the rare case of transient email/SMS failures).
+    return { statusCode: 500, body: JSON.stringify({ error: 'Webhook processing failed' }) };
   }
 
   return {
