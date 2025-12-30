@@ -148,7 +148,8 @@ exports.handler = async (event) => {
     } else {
       const subjectTag = sessionId ? sessionId.slice(-8) : '';
 
-      const result = await resend.emails.send({
+      try {
+        const result = await resend.emails.send({
         from: fromEmail,
         to: customerEmail,
         bcc: internalBcc,
@@ -177,12 +178,15 @@ exports.handler = async (event) => {
           </p>
         `,
       });
-
-      if (result?.id || result?.data?.id) {
-        emailSent = true;
-      } else {
-        emailError = 'Resend did not return an email id';
+        if (result?.id || result?.data?.id) {
+          emailSent = true;
+        } else {
+          emailError = 'Resend did not return an email id';
+        }
+      } catch (err) {
+        emailError = err?.message || String(err || 'Resend send failed');
       }
+
     }
 
     return {
