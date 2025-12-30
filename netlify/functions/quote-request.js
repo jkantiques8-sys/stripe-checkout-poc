@@ -1,5 +1,5 @@
 // netlify/functions/quote-request.js
-// Minimal "request-only" endpoint for fallback mode.
+// Request-only fallback endpoint:
 // - Receives JSON payload from Squarespace forms
 // - Emails OWNER + CUSTOMER via Resend
 // - No Stripe checkout, no DB
@@ -8,19 +8,17 @@
 //   customer.{name,phone,email}
 //   location.{street,address2,city,state,zip,notes}
 //   schedule.{dropoff_date,dropoff_timeslot_type,dropoff_timeslot_value, pickup_date, ...}
-//   items[{sku,qty}] (and will auto-generate readable names from sku if name is missing)
-//   pricing.{items,delivery,rush,dropFee,tax,total,deposit,remaining,isRush}
+//   items[{sku,qty}]  (optionally: name, unitPrice, lineTotal)
+//   pricing.{items,delivery,rush,congestion,dropFee,pickFee,extraDays,extended,minFee,tax,total,isRush,deposit,remaining}
 
-const json = (obj) =>
-  new Response(JSON.stringify(obj), {
-    status: obj?.ok ? 200 : obj?.status || 500,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Content-Type": "application/json",
-    },
-  });
+const headers = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Content-Type": "application/json",
+};
+
+const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers });
 
 const safe = (v) => (v === null || v === undefined ? "" : String(v));
 const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
@@ -32,6 +30,18 @@ const fmtMoney = (v) => {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 };
 
+// ✅ EDIT THIS MAP to match your current catalog pricing.
+// These are unit prices (per 1 qty).
+const SKU_PRICE_MAP = {
+  "table-chair-set": 160,
+  "vintage-drafting-table": 275,
+  "industrial-garment-rack": 175,
+  // Add the rest of your SKUs here:
+  // "vintage-folding-chair-dark": 12,
+  // "vintage-folding-chair-light": 12,
+  // "handmade-banquet-table-6ft": 195,
+};
+
 const titleizeSku = (skuRaw) => {
   const sku = safe(skuRaw).trim();
   if (!sku) return "";
@@ -40,15 +50,6 @@ const titleizeSku = (skuRaw) => {
     "table-chair-set": "Table + Chair Set",
     "vintage-drafting-table": "Vintage Drafting Table",
     "industrial-garment-rack": "Industrial Garment Rack",
-    "folding-table": "Folding Table",
-    "industrial-bar": "Industrial Bar",
-    "industrial-cocktail-table": "Industrial Cocktail Table",
-    "antique-work-bench": "Antique Work Bench",
-    "dark": "Vintage Folding Chair (Dark)",
-    "light": "Vintage Folding Chair (Light)",
-    "end-leaves": "Table End Leaves",
-    "ASH-NYC-steel-table": "ASH NYC Steel Table",
-    "MCM-etched-tulip-table": "MCM Etched Tulip Table",
   };
   if (map[sku]) return map[sku];
 
@@ -91,33 +92,87 @@ const getSchedule = (p) => {
 
 const getAddress = (p) => {
   const a = p?.location || p?.address || {};
-  const line1 = a.street || a.line1 || "";
-  const line2 = a.address2 || a.line2 || "";
-  const city = a.city || "";
-  const state = a.state || "";
-  const zip = a.zip || a.postal || "";
-  const notes = a.notes || "";
   return {
-    line1: safe(line1),
-    line2: safe(line2),
-    city: safe(city),
-    state: safe(state),
-    zip: safe(zip),
-    notes: safe(notes),
+    line1: safe(a.street || a.line1 || ""),
+    line2: safe(a.address2 || a.line2 || ""),
+    city: safe(a.city || ""),
+    state: safe(a.state || ""),
+    zip: safe(a.zip || a.postal || ""),
+    notes: safe(a.notes || ""),
   };
 };
 
+// Normalize items and compute unitPrice/lineTotal if possible
 const normalizeItems = (p) => {
   const items = Array.isArray(p?.items) ? p.items : [];
   return items
     .map((it) => {
-      const sku = safe(it.sku || it.id || "");
+      const sku = safe(it.sku || it.id || "").trim();
       const qty = Number(it.qty ?? it.quantity ?? 1) || 1;
-      const name =
-        safe(it.name || it.title || it.productName) || titleizeSku(sku);
-      return { sku, qty, name };
+      const name = safe(it.name || it.title || it.productName) || titleizeSku(sku);
+
+      // Prefer values from payload if present
+      const unitFromPayload = it.unitPrice ?? it.unit_price ?? it.price;
+      const lineFromPayload = it.lineTotal ?? it.line_total ?? it.total;
+
+      const unitPrice =
+        unitFromPayload !== undefined && unitFromPayload !== null && unitFromPayload !== ""
+          ? Number(unitFromPayload)
+          : (sku && SKU_PRICE_MAP[sku] !== undefined ? Number(SKU_PRICE_MAP[sku]) : NaN);
+
+      const lineTotal =
+        lineFromPayload !== undefined && lineFromPayload !== null && lineFromPayload !== ""
+          ? Number(lineFromPayload)
+          : (Number.isFinite(unitPrice) ? unitPrice * qty : NaN);
+
+      return { sku, qty, name, unitPrice, lineTotal };
     })
     .filter((it) => it.qty > 0);
+};
+
+const buildPricingLines = (pricing) => {
+  const lines = [];
+  const add = (label, val) => {
+    const n = Number(val);
+    if (!Number.isFinite(n) || Math.abs(n) < 0.000001) return;
+    lines.push({ label, value: n });
+  };
+
+  // These names match your payload screenshot
+  add("Items subtotal", pricing?.items);
+  add("Delivery fee", pricing?.delivery);
+  add("Rush fee", pricing?.rush);
+  add("Congestion fee", pricing?.congestion);
+  add("Delivery time slot fee", pricing?.dropFee);
+  add("Pickup time slot fee", pricing?.pickFee);
+  add("Extended rental fee", pricing?.extended);
+  add("Minimum fee adjustment", pricing?.minFee);
+
+  // Tax + Total at the end (even if 0 tax, include if total present)
+  const taxN = Number(pricing?.tax);
+  if (Number.isFinite(taxN) && Math.abs(taxN) >= 0.000001) lines.push({ label: "Sales tax", value: taxN });
+
+  const totalN = Number(pricing?.total);
+  if (Number.isFinite(totalN)) lines.push({ label: "Total", value: totalN, isTotal: true });
+
+  return lines;
+};
+
+const buildItemLines = (items) => {
+  const lines = [];
+  for (const it of items) {
+    const unitOk = Number.isFinite(it.unitPrice);
+    const lineOk = Number.isFinite(it.lineTotal);
+
+    if (unitOk && lineOk) {
+      lines.push(`- ${it.name} (x${it.qty}) — ${fmtMoney(it.unitPrice)} ea — ${fmtMoney(it.lineTotal)}`);
+    } else if (unitOk) {
+      lines.push(`- ${it.name} (x${it.qty}) — ${fmtMoney(it.unitPrice)} ea`);
+    } else {
+      lines.push(`- ${it.name} (x${it.qty})`);
+    }
+  }
+  return lines;
 };
 
 async function sendResend({ apiKey, from, to, subject, text }) {
@@ -144,43 +199,35 @@ async function sendResend({ apiKey, from, to, subject, text }) {
 }
 
 export default async (req) => {
-  if (req.method === "OPTIONS") return json({ ok: true });
-  if (req.method !== "POST")
-    return json({ ok: false, status: 405, error: "Method not allowed" });
+  if (req.method === "OPTIONS") return json(200, { ok: true });
+  if (req.method !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
   const RESEND_API_KEY = process.env.RESEND_API_KEY;
-  const FROM_EMAIL =
-    process.env.FROM_EMAIL || "Kraus' Tables & Chairs <orders@kraustables.com>";
+  const FROM_EMAIL = process.env.FROM_EMAIL || "Kraus' Tables & Chairs <orders@kraustables.com>";
   const OWNER_EMAIL = process.env.OWNER_EMAIL || "orders@kraustables.com";
 
-  if (!RESEND_API_KEY)
-    return json({ ok: false, status: 500, error: "Missing RESEND_API_KEY" });
+  if (!RESEND_API_KEY) return json(500, { ok: false, error: "Missing RESEND_API_KEY" });
 
   let p;
   try {
     p = await req.json();
   } catch {
-    return json({ ok: false, status: 400, error: "Invalid JSON body" });
+    return json(400, { ok: false, error: "Invalid JSON body" });
   }
 
   const customer = p?.customer || {};
   const customerEmail = safe(customer.email || p?.email).trim();
   const customerName = safe(customer.name || p?.name).trim();
 
-  if (!isEmail(customerEmail))
-    return json({
-      ok: false,
-      status: 400,
-      error: "Missing/invalid customer email",
-    });
+  if (!isEmail(customerEmail)) return json(400, { ok: false, error: "Missing/invalid customer email" });
 
   const items = normalizeItems(p);
-  if (!items.length)
-    return json({ ok: false, status: 400, error: "Missing items" });
+  if (!items.length) return json(400, { ok: false, error: "Missing items" });
 
   const requestId =
     (p?.requestId && String(p.requestId)) ||
     `KR-${Date.now()}-${Math.random().toString(16).slice(2, 8).toUpperCase()}`;
+
   const flow = safe(p?.flow || p?.flowType || "request");
   const createdAt = new Date().toISOString();
 
@@ -188,6 +235,17 @@ export default async (req) => {
   const addr = getAddress(p);
   const pricing = p?.pricing || p?.totals || {};
 
+  // Build shared blocks
+  const itemLines = buildItemLines(items);
+  const pricingLines = buildPricingLines(pricing);
+
+  const pricingText = pricingLines.length
+    ? pricingLines
+        .map((x) => (x.isTotal ? `- ${x.label}: ${fmtMoney(x.value)}` : `- ${x.label}: ${fmtMoney(x.value)}`))
+        .join("\n")
+    : "";
+
+  // OWNER EMAIL (no RAW JSON)
   const ownerLines = [];
   ownerLines.push(`Request ID: ${requestId}`);
   ownerLines.push(`Flow: ${flow}`);
@@ -203,6 +261,7 @@ export default async (req) => {
   if (schedule.dropDate) ownerLines.push(`- Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}`);
   if (schedule.pickDate) ownerLines.push(`- Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}`);
   ownerLines.push("");
+
   if (addr.line1 || addr.city || addr.zip) {
     ownerLines.push("Address:");
     if (addr.line1) ownerLines.push(`- ${addr.line1}`);
@@ -211,43 +270,43 @@ export default async (req) => {
     if (addr.notes) ownerLines.push(`- Notes: ${addr.notes}`);
     ownerLines.push("");
   }
+
   ownerLines.push("Items:");
-  for (const it of items) ownerLines.push(`- ${it.name} (x${it.qty}) [${it.sku}]`);
+  ownerLines.push(itemLines.join("\n"));
   ownerLines.push("");
-  if (pricing?.total !== undefined) {
-    ownerLines.push("Pricing (as shown to customer):");
-    if (pricing.items !== undefined) ownerLines.push(`- Items subtotal: ${fmtMoney(pricing.items)}`);
-    if (pricing.delivery !== undefined) ownerLines.push(`- Delivery fee: ${fmtMoney(pricing.delivery)}`);
-    if (pricing.rush !== undefined) ownerLines.push(`- Rush fee: ${fmtMoney(pricing.rush)}`);
-    if (pricing.dropFee !== undefined) ownerLines.push(`- Time slot fee: ${fmtMoney(pricing.dropFee)}`);
-    if (pricing.tax !== undefined) ownerLines.push(`- Tax: ${fmtMoney(pricing.tax)}`);
-    ownerLines.push(`- Total: ${fmtMoney(pricing.total)}`);
+
+  if (pricingText) {
+    ownerLines.push("Order Summary (as shown to customer):");
+    ownerLines.push(pricingText);
     ownerLines.push("");
   }
 
-  ownerLines.push("---");
-  ownerLines.push("RAW JSON:");
-  ownerLines.push(JSON.stringify({ ...p, requestId, createdAt }, null, 2));
-
   const ownerText = ownerLines.join("\n");
 
+  // CUSTOMER EMAIL
   const custLines = [];
   custLines.push(`Hi${customerName ? " " + customerName : ""},`);
   custLines.push("");
   custLines.push("We received your request and it is pending approval.");
   custLines.push("We’ll review availability and follow up shortly.");
+  custLines.push("If approved, we’ll email you an invoice to complete booking.");
   custLines.push("");
   custLines.push(`Request ID: ${requestId}`);
   custLines.push("");
+
   if (schedule.dropDate) custLines.push(`Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}`);
   if (schedule.pickDate) custLines.push(`Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}`);
   if (schedule.dropDate || schedule.pickDate) custLines.push("");
+
   custLines.push("Items:");
-  for (const it of items) custLines.push(`- ${it.name} (x${it.qty})`);
-  if (pricing?.total !== undefined) {
+  custLines.push(itemLines.join("\n"));
+
+  if (pricingText) {
     custLines.push("");
-    custLines.push(`Estimated total: ${fmtMoney(pricing.total)}`);
+    custLines.push("Order Summary:");
+    custLines.push(pricingText);
   }
+
   custLines.push("");
   custLines.push("Thanks,");
   custLines.push("Kraus' Tables & Chairs");
@@ -271,14 +330,9 @@ export default async (req) => {
       text: customerText,
     });
 
-    return json({ ok: true, requestId });
+    return json(200, { ok: true, requestId });
   } catch (err) {
     console.error("quote-request error:", err);
-    return json({
-      ok: false,
-      status: 500,
-      requestId,
-      error: "Failed to send email",
-    });
+    return json(500, { ok: false, requestId, error: "Failed to send email" });
   }
 };
