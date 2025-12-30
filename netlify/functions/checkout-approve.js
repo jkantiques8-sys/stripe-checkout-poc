@@ -210,6 +210,40 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing or invalid total_cents' }) };
     }
 
+    // --- Minimal money sanity checks (prevents rare drift between token/metadata and Stripe) ---
+    const sessionAmountCents = Number(session.amount_total || 0);
+    const mdTotalCents = md.total_cents ? Number(md.total_cents) : null;
+    const tokenTotalCents = decoded.orderDetails?.total_cents ? Number(decoded.orderDetails.total_cents) : null;
+
+    const mismatch = (a, b) =>
+      Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0 && a !== b;
+
+    if (mismatch(mdTotalCents, sessionAmountCents)) {
+      console.error('[ALERT] total_cents mismatch (metadata vs session.amount_total):', {
+        mdTotalCents,
+        sessionAmountCents,
+        sessionId
+      });
+      return {
+        statusCode: 409,
+        headers: cors,
+        body: JSON.stringify({ error: 'Amount mismatch (metadata vs Stripe session). Please refresh and try again.' })
+      };
+    }
+
+    if (mismatch(tokenTotalCents, sessionAmountCents)) {
+      console.error('[ALERT] total_cents mismatch (token vs session.amount_total):', {
+        tokenTotalCents,
+        sessionAmountCents,
+        sessionId
+      });
+      return {
+        statusCode: 409,
+        headers: cors,
+        body: JSON.stringify({ error: 'Amount mismatch (token vs Stripe session). Please refresh and try again.' })
+      };
+    }
+
     // -----------------------------
     // SELF SERVICE: capture PI
     // -----------------------------
@@ -225,6 +259,21 @@ exports.handler = async (event) => {
 
       const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
 
+      if (sessionAmountCents && pi?.amount && pi.amount !== sessionAmountCents) {
+        console.error('[ALERT] amount mismatch (PI vs session.amount_total):', {
+          piAmount: pi.amount,
+          sessionAmountCents,
+          paymentIntentId,
+          sessionId
+        });
+        return {
+          statusCode: 409,
+          headers: cors,
+          body: JSON.stringify({ error: 'Amount mismatch (Stripe). Please refresh and try again.' })
+        };
+      }
+
+
       // If the intent was authorized (manual capture), capture it now.
       // If it's already succeeded, just treat as approved/paid.
       if (pi.status === 'requires_capture') {
@@ -236,14 +285,18 @@ exports.handler = async (event) => {
       // Use PI amount if present; fall back to totalCents
       const paidNowCents = Number(pi.amount || totalCents);
 
-      // Email + optional owner SMS
-      await sendEmailApproved({
+      // Email + optional owner SMS (non-blocking; do not fail approval if notifications fail)
+      try {
+        await sendEmailApproved({
         to: customerEmail,
         customerName,
         paidNowCents,
         balanceCents: 0,
         dropoffDateStr: ''
-      });
+        });
+      } catch (err) {
+        console.error('[ALERT] Failed to send approval email:', err?.message || err);
+      }
 
       if (process.env.OWNER_SMS_TO) {
         const ownerBody = [
@@ -252,7 +305,15 @@ exports.handler = async (event) => {
           `Paid now: $${centsToDollars(paidNowCents)}`,
           `PI: ${paymentIntentId}`
         ].filter(Boolean).join(' | ');
-        await sendOwnerSms({ body: ownerBody });
+        try {
+          try {
+      await sendOwnerSms({ body: ownerBody });
+    } catch (err) {
+      console.error('[ALERT] Failed to send owner SMS:', err?.message || err);
+    }
+        } catch (err) {
+          console.error('[ALERT] Failed to send owner SMS:', err?.message || err);
+        }
       }
 
       return {
@@ -425,7 +486,11 @@ exports.handler = async (event) => {
         balanceCents > 0 ? `Remaining: $${centsToDollars(balanceCents)} (invoice ${scheduledInvoiceId || 'scheduled'})` : 'Paid in full',
         dropoffDateStr ? `Drop-off: ${dropoffDateStr}` : ''
       ].filter(Boolean).join(' | ');
+      try {
       await sendOwnerSms({ body: ownerBody });
+    } catch (err) {
+      console.error('[ALERT] Failed to send owner SMS:', err?.message || err);
+    }
     }
 
     return {
