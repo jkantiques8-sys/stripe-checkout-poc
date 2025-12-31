@@ -1,9 +1,4 @@
 // netlify/functions/quote-request.js
-// Request-only fallback endpoint (Resend):
-// - Receives JSON payload from Squarespace forms
-// - Emails OWNER + CUSTOMER via Resend
-// - HTML emails with column tables (items + summary)
-// - No Stripe checkout, no DB
 
 const headers = {
   "Access-Control-Allow-Origin": "*",
@@ -29,13 +24,12 @@ const fmtMoneyOrDash = (v) => {
   return s || "—";
 };
 
-// --- Signature / Policies ---
-const POLICIES_URL = "https://kraustables.com/rental-policies";
+// --- Policies / Signature (CUSTOMER ONLY) ---
+const POLICIES_URL = "https://kraustables.com/terms-conditions";
 const SIG_ADDRESS = "956 Hancock Street, #1L\nBrooklyn, NY 11233";
 const SIG_PHONE = "(718) 218-4057";
 
 // EDIT THIS MAP to match your catalog unit prices.
-// If a SKU isn't here AND the payload doesn't provide unitPrice, unit will show "—".
 const SKU_PRICE_MAP = {
   "antique-work-bench": 400,
   "ASH-NYC-steel-table": 400,
@@ -112,8 +106,8 @@ const formatPromptHourRange = (rangeStr) => {
 
 const getSchedule = (p) => {
   const s = p?.schedule || {};
-  // FULL-SERVICE typically posts a nested schedule object with dropoff/pickup fields.
-  // SELF-SERVICE currently posts pickup_date + return_date at the root.
+  // FULL-SERVICE: nested schedule (dropoff/pickup)
+  // SELF-SERVICE: pickup_date + return_date at root
   const dropDate = s.dropoff_date || s.dropoffDate || "";
   const pickDate = s.pickup_date || s.pickupDate || "";
   const selfPickupDate = p?.pickup_date || p?.pickupDate || "";
@@ -127,12 +121,7 @@ const getSchedule = (p) => {
     const t = safe(type);
     const v = safe(val);
     if (!t && !v) return "";
-
-    // Standardize "prompt" timeslots into 12-hour ranges
-    if (t === "prompt" && v) {
-      return formatPromptHourRange(v);
-    }
-
+    if (t === "prompt" && v) return formatPromptHourRange(v);
     if (t === "flex" && v) return `Flexible window (${v})`;
     if (t && v) return `${t}: ${v}`;
     return v || t;
@@ -170,7 +159,6 @@ const normalizeItems = (p) => {
       const name =
         safe(it.name || it.title || it.productName).trim() || titleizeSku(sku) || sku || "Item";
 
-      // Prefer values from payload if present
       const unitFromPayload = it.unitPrice ?? it.unit_price ?? it.price;
       const lineFromPayload = it.lineTotal ?? it.line_total ?? it.total;
 
@@ -179,6 +167,7 @@ const normalizeItems = (p) => {
           ? Number(unitFromPayload)
           : sku && SKU_PRICE_MAP[sku] !== undefined
             ? Number(SKU_PRICE_MAP[sku])
+okit
             : NaN;
 
       const lineTotal =
@@ -201,8 +190,6 @@ const buildSummaryRows = (pricing) => {
     rows.push({ label, value: n, ...opts });
   };
 
-  // FULL-SERVICE keys: items, delivery, rush, congestion, dropFee, pickFee, extended, minFee
-  // SELF-SERVICE keys: chairsSubtotal, rush, extend, minFee
   add("Items subtotal", pricing?.items ?? pricing?.itemsSubtotal ?? pricing?.chairsSubtotal);
   add("Delivery fee (30%)", pricing?.delivery);
   add("Rush fee (≤2 days)", pricing?.rush);
@@ -368,8 +355,6 @@ export default async (req) => {
   const flow = safe(p?.flow || p?.flowType || "request");
   const createdAt = new Date().toISOString();
 
-  // Detect the SELF-SERVICE flow reliably even if the frontend doesn't send flow/flowType.
-  // Self-service posts pickup_date + return_date at the root and only chair_* SKUs.
   const isSelfFlow =
     /self/i.test(flow) ||
     (!!p?.pickup_date || !!p?.pickupDate || !!p?.return_date || !!p?.returnDate) ||
@@ -382,12 +367,12 @@ export default async (req) => {
   const pricing = p?.pricing || p?.totals || {};
   const summaryRows = buildSummaryRows(pricing);
 
-  // ---------- OWNER EMAIL SUBJECT (per flow) ----------
+  // OWNER SUBJECT per flow
   const ownerSubject = isSelfFlow
     ? `NEW CHAIR RENTAL REQUEST — ${requestId}`
     : `NEW EVENT RENTAL REQUEST — ${requestId}`;
 
-  // ---------- OWNER EMAIL ----------
+  // OWNER EMAIL (NO policies link, NO signature)
   const ownerText =
     `Request ID: ${requestId}\n` +
     `Flow: ${flow}\n` +
@@ -401,8 +386,12 @@ export default async (req) => {
     (isSelfFlow
       ? (schedule.selfPickupDate ? `- Pickup: ${schedule.selfPickupDate}\n` : "") +
         (schedule.selfReturnDate ? `- Return: ${schedule.selfReturnDate}\n` : "")
-      : (schedule.dropDate ? `- Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
-        (schedule.pickDate ? `- Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n` : "")) +
+      : (schedule.dropDate
+          ? `- Delivery: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n`
+          : "") +
+        (schedule.pickDate
+          ? `- Pickup:   ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n`
+          : "")) +
     (addr.line1 || addr.city || addr.zip
       ? `\nAddress:\n` +
         (addr.line1 ? `- ${addr.line1}\n` : "") +
@@ -411,9 +400,7 @@ export default async (req) => {
         (addr.notes ? `- Notes: ${addr.notes}\n` : "")
       : "") +
     `\nItems:\n${textItems(items)}\n` +
-    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
-    `\nView our Rental Policies:\n${POLICIES_URL}\n` +
-    `\nKraus' Tables & Chairs\n${SIG_ADDRESS}\n${SIG_PHONE}\n`;
+    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "");
 
   const ownerHtml = `
     <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
@@ -436,8 +423,20 @@ export default async (req) => {
       <p style="margin:0 0 14px;">
         ${isSelfFlow && schedule.selfPickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.selfPickupDate)}<br>` : ""}
         ${isSelfFlow && schedule.selfReturnDate ? `<strong>Return:</strong> ${escapeHtml(schedule.selfReturnDate)}` : ""}
-        ${!isSelfFlow && schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
-        ${!isSelfFlow && schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
+        ${
+          !isSelfFlow && schedule.dropDate
+            ? `<strong>Delivery:</strong> ${escapeHtml(schedule.dropDate)}${
+                schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""
+              }<br>`
+            : ""
+        }
+        ${
+          !isSelfFlow && schedule.pickDate
+            ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${
+                schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""
+              }`
+            : ""
+        }
       </p>
 
       ${
@@ -464,24 +463,15 @@ export default async (req) => {
       `
           : ""
       }
-
-      <p style="margin:18px 0 0;">
-        <a href="${escapeHtml(POLICIES_URL)}">View our Rental Policies</a>
-      </p>
-
-      <p style="margin:10px 0 0;">
-        Kraus' Tables & Chairs<br>
-        ${escapeHtml(SIG_ADDRESS).replace(/\n/g, "<br>")}<br>
-        ${escapeHtml(SIG_PHONE)}
-      </p>
     </div>
   `;
 
-  // ---------- CUSTOMER EMAIL ----------
+  // CUSTOMER SUBJECT
   const customerSubject = isSelfFlow
     ? "Chair Rental Request Received – Pending Approval"
     : "Event Rental Request Received – Pending Approval";
 
+  // CUSTOMER EMAIL (keeps policies link + signature, signature styled gray in HTML)
   const customerText =
     `Hi${customerName ? " " + customerName : ""},\n\n` +
     `We received your request and it is pending approval.\n` +
@@ -491,8 +481,12 @@ export default async (req) => {
     (isSelfFlow
       ? (schedule.selfPickupDate ? `Pickup: ${schedule.selfPickupDate}\n` : "") +
         (schedule.selfReturnDate ? `Return: ${schedule.selfReturnDate}\n\n` : "\n")
-      : (schedule.dropDate ? `Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
-        (schedule.pickDate ? `Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n` : "\n")) +
+      : (schedule.dropDate
+          ? `Delivery: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n`
+          : "") +
+        (schedule.pickDate
+          ? `Pickup:   ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n`
+          : "\n")) +
     `Items:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
     `\nView our Rental Policies:\n${POLICIES_URL}\n` +
@@ -514,8 +508,20 @@ export default async (req) => {
       <p style="margin:0 0 14px;">
         ${isSelfFlow && schedule.selfPickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.selfPickupDate)}<br>` : ""}
         ${isSelfFlow && schedule.selfReturnDate ? `<strong>Return:</strong> ${escapeHtml(schedule.selfReturnDate)}` : ""}
-        ${!isSelfFlow && schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
-        ${!isSelfFlow && schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
+        ${
+          !isSelfFlow && schedule.dropDate
+            ? `<strong>Delivery:</strong> ${escapeHtml(schedule.dropDate)}${
+                schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""
+              }<br>`
+            : ""
+        }
+        ${
+          !isSelfFlow && schedule.pickDate
+            ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${
+                schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""
+              }`
+            : ""
+        }
       </p>
 
       <h3 style="margin:18px 0 8px;">Items</h3>
@@ -534,7 +540,7 @@ export default async (req) => {
         <a href="${escapeHtml(POLICIES_URL)}">View our Rental Policies</a>
       </p>
 
-      <p style="margin:10px 0 0;">
+      <p style="margin:10px 0 0; color:#777;">
         Thanks,<br>
         Kraus' Tables & Chairs<br>
         ${escapeHtml(SIG_ADDRESS).replace(/\n/g, "<br>")}<br>
