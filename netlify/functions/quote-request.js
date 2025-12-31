@@ -44,6 +44,9 @@ const SKU_PRICE_MAP = {
   "MCM-etched-tulip-table": 250,
   "table-chair-set": 160,
   "vintage-drafting-table": 100,
+  // SELF-SERVICE
+  "chair_dark": 10,
+  "chair_light": 10,
 };
 
 const SKU_NAME_MAP = {
@@ -59,6 +62,9 @@ const SKU_NAME_MAP = {
   "MCM-etched-tulip-table": "MCM Etched Tulip Table",
   "table-chair-set": "Table + 6 Chairs",
   "vintage-drafting-table": "Vintage Drafting Table",
+  // SELF-SERVICE
+  "chair_dark": "Vintage Folding Chairs — Dark",
+  "chair_light": "Vintage Folding Chairs — Light",
 };
 
 const titleizeSku = (skuRaw) => {
