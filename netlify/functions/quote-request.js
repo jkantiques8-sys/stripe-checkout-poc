@@ -167,7 +167,6 @@ const normalizeItems = (p) => {
           ? Number(unitFromPayload)
           : sku && SKU_PRICE_MAP[sku] !== undefined
             ? Number(SKU_PRICE_MAP[sku])
-okit
             : NaN;
 
       const lineTotal =
@@ -367,7 +366,6 @@ export default async (req) => {
   const pricing = p?.pricing || p?.totals || {};
   const summaryRows = buildSummaryRows(pricing);
 
-  // OWNER SUBJECT per flow
   const ownerSubject = isSelfFlow
     ? `NEW CHAIR RENTAL REQUEST — ${requestId}`
     : `NEW EVENT RENTAL REQUEST — ${requestId}`;
@@ -466,12 +464,10 @@ export default async (req) => {
     </div>
   `;
 
-  // CUSTOMER SUBJECT
   const customerSubject = isSelfFlow
     ? "Chair Rental Request Received – Pending Approval"
     : "Event Rental Request Received – Pending Approval";
 
-  // CUSTOMER EMAIL (keeps policies link + signature, signature styled gray in HTML)
   const customerText =
     `Hi${customerName ? " " + customerName : ""},\n\n` +
     `We received your request and it is pending approval.\n` +
