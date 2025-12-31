@@ -29,42 +29,47 @@ const fmtMoneyOrDash = (v) => {
   return s || "—";
 };
 
+// --- Signature / Policies ---
+const POLICIES_URL = "https://kraustables.com/rental-policies";
+const SIG_ADDRESS = "956 Hancock Street, #1L\nBrooklyn, NY 11233";
+const SIG_PHONE = "(718) 218-4057";
+
 // EDIT THIS MAP to match your catalog unit prices.
 // If a SKU isn't here AND the payload doesn't provide unitPrice, unit will show "—".
 const SKU_PRICE_MAP = {
   "antique-work-bench": 400,
   "ASH-NYC-steel-table": 400,
-  "dark": 10,
+  dark: 10,
   "end-leaves": 50,
   "folding-table": 100,
   "industrial-bar": 400,
   "industrial-cocktail-table": 50,
   "industrial-garment-rack": 100,
-  "light": 10,
+  light: 10,
   "MCM-etched-tulip-table": 250,
   "table-chair-set": 160,
   "vintage-drafting-table": 100,
   // SELF-SERVICE
-  "chair_dark": 10,
-  "chair_light": 10,
+  chair_dark: 10,
+  chair_light: 10,
 };
 
 const SKU_NAME_MAP = {
   "antique-work-bench": "Antique Work Bench",
   "ASH-NYC-steel-table": "ASH NYC Standard Steel Table",
-  "dark": "Vintage Folding Chairs — Dark",
+  dark: "Vintage Folding Chairs — Dark",
   "end-leaves": "End Leaves (pair)",
   "folding-table": "Folding Farm Table",
   "industrial-bar": "Industrial Serving Bar",
   "industrial-cocktail-table": "Industrial Cocktail Table",
   "industrial-garment-rack": "Industrial Garment Rack",
-  "light": "Vintage Folding Chairs — Light",
+  light: "Vintage Folding Chairs — Light",
   "MCM-etched-tulip-table": "MCM Etched Tulip Table",
   "table-chair-set": "Table + 6 Chairs",
   "vintage-drafting-table": "Vintage Drafting Table",
   // SELF-SERVICE
-  "chair_dark": "Vintage Folding Chairs — Dark",
-  "chair_light": "Vintage Folding Chairs — Light",
+  chair_dark: "Vintage Folding Chairs — Dark",
+  chair_light: "Vintage Folding Chairs — Light",
 };
 
 const titleizeSku = (skuRaw) => {
@@ -83,6 +88,28 @@ const titleizeSku = (skuRaw) => {
     .join(" ");
 };
 
+// --- Time window formatting (prompt) ---
+// "7-8" -> "7-8 AM" (assume AM if < 12)
+// "19-20" -> "7-8 PM"
+const formatPromptHourRange = (rangeStr) => {
+  const raw = safe(rangeStr).trim();
+  if (!raw) return "";
+  const m = raw.match(/^(\d{1,2})(?::\d{2})?\s*-\s*(\d{1,2})(?::\d{2})?$/);
+  if (!m) return raw;
+
+  const start = parseInt(m[1], 10);
+  const end = parseInt(m[2], 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return raw;
+
+  const meridiem = start >= 12 ? "PM" : "AM";
+  const to12 = (h) => {
+    const x = h % 12;
+    return x === 0 ? 12 : x;
+  };
+
+  return `${to12(start)}-${to12(end)} ${meridiem}`;
+};
+
 const getSchedule = (p) => {
   const s = p?.schedule || {};
   // FULL-SERVICE typically posts a nested schedule object with dropoff/pickup fields.
@@ -97,17 +124,25 @@ const getSchedule = (p) => {
   const pickVal = s.pickup_timeslot_value || s.pickupTimeslotValue || "";
 
   const humanSlot = (type, val) => {
-    if (!type && !val) return "";
-    if (type === "flex" && val) return `Flexible window (${val})`;
-    if (type && val) return `${type}: ${val}`;
-    return val || type;
+    const t = safe(type);
+    const v = safe(val);
+    if (!t && !v) return "";
+
+    // Standardize "prompt" timeslots into 12-hour ranges
+    if (t === "prompt" && v) {
+      return formatPromptHourRange(v);
+    }
+
+    if (t === "flex" && v) return `Flexible window (${v})`;
+    if (t && v) return `${t}: ${v}`;
+    return v || t;
   };
 
   return {
     dropDate: safe(dropDate),
-    dropWindow: humanSlot(safe(dropType), safe(dropVal)),
+    dropWindow: humanSlot(dropType, dropVal),
     pickDate: safe(pickDate),
-    pickWindow: humanSlot(safe(pickType), safe(pickVal)),
+    pickWindow: humanSlot(pickType, pickVal),
     selfPickupDate: safe(selfPickupDate),
     selfReturnDate: safe(selfReturnDate),
   };
@@ -142,12 +177,16 @@ const normalizeItems = (p) => {
       const unitPrice =
         unitFromPayload !== undefined && unitFromPayload !== null && unitFromPayload !== ""
           ? Number(unitFromPayload)
-          : (sku && SKU_PRICE_MAP[sku] !== undefined ? Number(SKU_PRICE_MAP[sku]) : NaN);
+          : sku && SKU_PRICE_MAP[sku] !== undefined
+            ? Number(SKU_PRICE_MAP[sku])
+            : NaN;
 
       const lineTotal =
         lineFromPayload !== undefined && lineFromPayload !== null && lineFromPayload !== ""
           ? Number(lineFromPayload)
-          : (Number.isFinite(unitPrice) ? unitPrice * qty : NaN);
+          : Number.isFinite(unitPrice)
+            ? unitPrice * qty
+            : NaN;
 
       return { sku, qty, name, unitPrice, lineTotal };
     })
@@ -343,6 +382,11 @@ export default async (req) => {
   const pricing = p?.pricing || p?.totals || {};
   const summaryRows = buildSummaryRows(pricing);
 
+  // ---------- OWNER EMAIL SUBJECT (per flow) ----------
+  const ownerSubject = isSelfFlow
+    ? `NEW CHAIR RENTAL REQUEST — ${requestId}`
+    : `NEW EVENT RENTAL REQUEST — ${requestId}`;
+
   // ---------- OWNER EMAIL ----------
   const ownerText =
     `Request ID: ${requestId}\n` +
@@ -367,7 +411,9 @@ export default async (req) => {
         (addr.notes ? `- Notes: ${addr.notes}\n` : "")
       : "") +
     `\nItems:\n${textItems(items)}\n` +
-    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "");
+    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
+    `\nView our Rental Policies:\n${POLICIES_URL}\n` +
+    `\nKraus' Tables & Chairs\n${SIG_ADDRESS}\n${SIG_PHONE}\n`;
 
   const ownerHtml = `
     <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
@@ -418,6 +464,16 @@ export default async (req) => {
       `
           : ""
       }
+
+      <p style="margin:18px 0 0;">
+        <a href="${escapeHtml(POLICIES_URL)}">View our Rental Policies</a>
+      </p>
+
+      <p style="margin:10px 0 0;">
+        Kraus' Tables & Chairs<br>
+        ${escapeHtml(SIG_ADDRESS).replace(/\n/g, "<br>")}<br>
+        ${escapeHtml(SIG_PHONE)}
+      </p>
     </div>
   `;
 
@@ -439,7 +495,8 @@ export default async (req) => {
         (schedule.pickDate ? `Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n` : "\n")) +
     `Items:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
-    `\nThanks,\nKraus' Tables & Chairs`;
+    `\nView our Rental Policies:\n${POLICIES_URL}\n` +
+    `\nThanks,\nKraus' Tables & Chairs\n${SIG_ADDRESS}\n${SIG_PHONE}\n`;
 
   const customerHtml = `
     <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
@@ -473,7 +530,16 @@ export default async (req) => {
           : ""
       }
 
-      <p style="margin:18px 0 0;">Thanks,<br>Kraus' Tables & Chairs</p>
+      <p style="margin:18px 0 0;">
+        <a href="${escapeHtml(POLICIES_URL)}">View our Rental Policies</a>
+      </p>
+
+      <p style="margin:10px 0 0;">
+        Thanks,<br>
+        Kraus' Tables & Chairs<br>
+        ${escapeHtml(SIG_ADDRESS).replace(/\n/g, "<br>")}<br>
+        ${escapeHtml(SIG_PHONE)}
+      </p>
     </div>
   `;
 
@@ -482,7 +548,7 @@ export default async (req) => {
       apiKey: RESEND_API_KEY,
       from: FROM_EMAIL,
       to: OWNER_EMAIL,
-      subject: `NEW REQUEST (manual) — ${customerName || customerEmail} — ${requestId}`,
+      subject: ownerSubject,
       text: ownerText,
       html: ownerHtml,
     });
