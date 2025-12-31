@@ -34,37 +34,37 @@ const fmtMoneyOrDash = (v) => {
 const SKU_PRICE_MAP = {
   "antique-work-bench": 400,
   "ASH-NYC-steel-table": 400,
-  "dark": 10,
+  dark: 10,
   "end-leaves": 50,
   "folding-table": 100,
   "industrial-bar": 400,
   "industrial-cocktail-table": 50,
   "industrial-garment-rack": 100,
-  "light": 10,
+  light: 10,
   "MCM-etched-tulip-table": 250,
   "table-chair-set": 160,
   "vintage-drafting-table": 100,
   // SELF-SERVICE
-  "chair_dark": 10,
-  "chair_light": 10,
+  chair_dark: 10,
+  chair_light: 10,
 };
 
 const SKU_NAME_MAP = {
   "antique-work-bench": "Antique Work Bench",
   "ASH-NYC-steel-table": "ASH NYC Standard Steel Table",
-  "dark": "Vintage Folding Chairs — Dark",
+  dark: "Vintage Folding Chairs — Dark",
   "end-leaves": "End Leaves (pair)",
   "folding-table": "Folding Farm Table",
   "industrial-bar": "Industrial Serving Bar",
   "industrial-cocktail-table": "Industrial Cocktail Table",
   "industrial-garment-rack": "Industrial Garment Rack",
-  "light": "Vintage Folding Chairs — Light",
+  light: "Vintage Folding Chairs — Light",
   "MCM-etched-tulip-table": "MCM Etched Tulip Table",
   "table-chair-set": "Table + 6 Chairs",
   "vintage-drafting-table": "Vintage Drafting Table",
   // SELF-SERVICE
-  "chair_dark": "Vintage Folding Chairs — Dark",
-  "chair_light": "Vintage Folding Chairs — Light",
+  chair_dark: "Vintage Folding Chairs — Dark",
+  chair_light: "Vintage Folding Chairs — Light",
 };
 
 const titleizeSku = (skuRaw) => {
@@ -83,14 +83,72 @@ const titleizeSku = (skuRaw) => {
     .join(" ");
 };
 
+// FIX: self-service payload may not nest schedule under p.schedule.
+// We now read from p.schedule FIRST, then fall back to root-level fields.
 const getSchedule = (p) => {
   const s = p?.schedule || {};
-  const dropDate = s.dropoff_date || s.dropoffDate || "";
-  const pickDate = s.pickup_date || s.pickupDate || "";
-  const dropType = s.dropoff_timeslot_type || s.dropoffTimeslotType || "";
-  const dropVal = s.dropoff_timeslot_value || s.dropoffTimeslotValue || "";
-  const pickType = s.pickup_timeslot_type || s.pickupTimeslotType || "";
-  const pickVal = s.pickup_timeslot_value || s.pickupTimeslotValue || "";
+
+  const dropDate =
+    s.dropoff_date ||
+    s.dropoffDate ||
+    p?.dropoff_date ||
+    p?.dropoffDate ||
+    p?.dropoff_date_value ||
+    p?.dropoffDateValue ||
+    p?.drop_date ||
+    p?.dropDate ||
+    "";
+
+  const pickDate =
+    s.pickup_date ||
+    s.pickupDate ||
+    p?.pickup_date ||
+    p?.pickupDate ||
+    p?.pickup_date_value ||
+    p?.pickupDateValue ||
+    p?.pick_date ||
+    p?.pickDate ||
+    "";
+
+  const dropType =
+    s.dropoff_timeslot_type ||
+    s.dropoffTimeslotType ||
+    p?.dropoff_timeslot_type ||
+    p?.dropoffTimeslotType ||
+    p?.dropoff_slot_type ||
+    p?.dropoffSlotType ||
+    "";
+
+  const dropVal =
+    s.dropoff_timeslot_value ||
+    s.dropoffTimeslotValue ||
+    p?.dropoff_timeslot_value ||
+    p?.dropoffTimeslotValue ||
+    p?.dropoff_slot_value ||
+    p?.dropoffSlotValue ||
+    p?.dropoff_window ||
+    p?.dropoffWindow ||
+    "";
+
+  const pickType =
+    s.pickup_timeslot_type ||
+    s.pickupTimeslotType ||
+    p?.pickup_timeslot_type ||
+    p?.pickupTimeslotType ||
+    p?.pickup_slot_type ||
+    p?.pickupSlotType ||
+    "";
+
+  const pickVal =
+    s.pickup_timeslot_value ||
+    s.pickupTimeslotValue ||
+    p?.pickup_timeslot_value ||
+    p?.pickupTimeslotValue ||
+    p?.pickup_slot_value ||
+    p?.pickupSlotValue ||
+    p?.pickup_window ||
+    p?.pickupWindow ||
+    "";
 
   const humanSlot = (type, val) => {
     if (!type && !val) return "";
@@ -136,12 +194,16 @@ const normalizeItems = (p) => {
       const unitPrice =
         unitFromPayload !== undefined && unitFromPayload !== null && unitFromPayload !== ""
           ? Number(unitFromPayload)
-          : (sku && SKU_PRICE_MAP[sku] !== undefined ? Number(SKU_PRICE_MAP[sku]) : NaN);
+          : sku && SKU_PRICE_MAP[sku] !== undefined
+            ? Number(SKU_PRICE_MAP[sku])
+            : NaN;
 
       const lineTotal =
         lineFromPayload !== undefined && lineFromPayload !== null && lineFromPayload !== ""
           ? Number(lineFromPayload)
-          : (Number.isFinite(unitPrice) ? unitPrice * qty : NaN);
+          : Number.isFinite(unitPrice)
+            ? unitPrice * qty
+            : NaN;
 
       return { sku, qty, name, unitPrice, lineTotal };
     })
@@ -319,7 +381,10 @@ export default async (req) => {
     (p?.requestId && String(p.requestId)) ||
     `KR-${Date.now()}-${Math.random().toString(16).slice(2, 8).toUpperCase()}`;
 
-  const flow = safe(p?.flow || p?.flowType || "request");
+  const flowRaw = safe(p?.flow || p?.flowType || "request");
+  const flow = flowRaw || "request";
+  const isSelfFlow = /self/i.test(flow);
+
   const createdAt = new Date().toISOString();
 
   const schedule = getSchedule(p);
@@ -400,13 +465,42 @@ export default async (req) => {
     </div>
   `;
 
-  // ---------- CUSTOMER EMAIL ----------
+  // ---------- CUSTOMER EMAIL (DIFFERENT PER FLOW) ----------
+  // You said you'll edit copy yourself — these are separate blocks for self vs full.
+  const CUSTOMER_COPY_SELF = {
+    subject: `Chair Rental Request Received – Pending Approval — ${requestId}`,
+    // Edit as you like:
+    introHtml: `
+      We received your chair rental request and it is pending approval.<br>
+      We’ll review availability and follow up shortly.<br>
+      <strong>If approved, we’ll email you an invoice to complete booking.</strong>
+    `,
+    introText:
+      "We received your chair rental request and it is pending approval.\n" +
+      "We’ll review availability and follow up shortly.\n" +
+      "If approved, we’ll email you an invoice to complete booking.\n",
+  };
+
+  const CUSTOMER_COPY_FULL = {
+    subject: `Event Rental Request Received – Pending Approval — ${requestId}`,
+    // Edit as you like:
+    introHtml: `
+      We received your event rental request and it is pending approval.<br>
+      We’ll review availability and follow up shortly.<br>
+      <strong>If approved, we’ll email you an invoice to complete booking.</strong>
+    `,
+    introText:
+      "We received your event rental request and it is pending approval.\n" +
+      "We’ll review availability and follow up shortly.\n" +
+      "If approved, we’ll email you an invoice to complete booking.\n",
+  };
+
+  const customerTemplate = isSelfFlow ? CUSTOMER_COPY_SELF : CUSTOMER_COPY_FULL;
+
   const customerText =
     `Hi${customerName ? " " + customerName : ""},\n\n` +
-    `We received your request and it is pending approval.\n` +
-    `We’ll review availability and follow up shortly.\n` +
-    `If approved, we’ll email you an invoice to complete booking.\n\n` +
-    `Request ID: ${requestId}\n\n` +
+    customerTemplate.introText +
+    `\nRequest ID: ${requestId}\n\n` +
     (schedule.dropDate ? `Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
     (schedule.pickDate ? `Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n` : "\n") +
     `Items:\n${textItems(items)}\n` +
@@ -418,9 +512,7 @@ export default async (req) => {
       <p style="margin:0 0 12px;">Hi${customerName ? " " + escapeHtml(customerName) : ""},</p>
 
       <p style="margin:0 0 12px;">
-        We received your request and it is pending approval.<br>
-        We’ll review availability and follow up shortly.<br>
-        <strong>If approved, we’ll email you an invoice to complete booking.</strong>
+        ${customerTemplate.introHtml}
       </p>
 
       <p style="margin:0 0 14px;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
@@ -461,7 +553,7 @@ export default async (req) => {
       apiKey: RESEND_API_KEY,
       from: FROM_EMAIL,
       to: customerEmail,
-      subject: `KRAUS — Request received (pending approval) — ${requestId}`,
+      subject: customerTemplate.subject,
       text: customerText,
       html: customerHtml,
     });
