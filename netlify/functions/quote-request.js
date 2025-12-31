@@ -1,4 +1,9 @@
 // netlify/functions/quote-request.js
+// Request-only fallback endpoint (Resend):
+// - Receives JSON payload from Squarespace forms
+// - Emails OWNER + CUSTOMER via Resend
+// - HTML emails with column tables (items + summary)
+// - No Stripe checkout, no DB
 
 const headers = {
   "Access-Control-Allow-Origin": "*",
@@ -25,40 +30,41 @@ const fmtMoneyOrDash = (v) => {
 };
 
 // EDIT THIS MAP to match your catalog unit prices.
+// If a SKU isn't here AND the payload doesn't provide unitPrice, unit will show "—".
 const SKU_PRICE_MAP = {
   "antique-work-bench": 400,
   "ASH-NYC-steel-table": 400,
-  dark: 10,
+  "dark": 10,
   "end-leaves": 50,
   "folding-table": 100,
   "industrial-bar": 400,
   "industrial-cocktail-table": 50,
   "industrial-garment-rack": 100,
-  light: 10,
+  "light": 10,
   "MCM-etched-tulip-table": 250,
   "table-chair-set": 160,
   "vintage-drafting-table": 100,
   // SELF-SERVICE
-  chair_dark: 10,
-  chair_light: 10,
+  "chair_dark": 10,
+  "chair_light": 10,
 };
 
 const SKU_NAME_MAP = {
   "antique-work-bench": "Antique Work Bench",
   "ASH-NYC-steel-table": "ASH NYC Standard Steel Table",
-  dark: "Vintage Folding Chairs — Dark",
+  "dark": "Vintage Folding Chairs — Dark",
   "end-leaves": "End Leaves (pair)",
   "folding-table": "Folding Farm Table",
   "industrial-bar": "Industrial Serving Bar",
   "industrial-cocktail-table": "Industrial Cocktail Table",
   "industrial-garment-rack": "Industrial Garment Rack",
-  light: "Vintage Folding Chairs — Light",
+  "light": "Vintage Folding Chairs — Light",
   "MCM-etched-tulip-table": "MCM Etched Tulip Table",
   "table-chair-set": "Table + 6 Chairs",
   "vintage-drafting-table": "Vintage Drafting Table",
   // SELF-SERVICE
-  chair_dark: "Vintage Folding Chairs — Dark",
-  chair_light: "Vintage Folding Chairs — Light",
+  "chair_dark": "Vintage Folding Chairs — Dark",
+  "chair_light": "Vintage Folding Chairs — Light",
 };
 
 const titleizeSku = (skuRaw) => {
@@ -77,157 +83,45 @@ const titleizeSku = (skuRaw) => {
     .join(" ");
 };
 
-// UPDATED: supports Full (Drop-off/Pickup) AND Self (Pickup/Return)
 const getSchedule = (p) => {
   const s = p?.schedule || {};
-
-  // Full-service style (drop-off / pickup)
-  const dropDate =
-    s.dropoff_date ||
-    s.dropoffDate ||
-    p?.dropoff_date ||
-    p?.dropoffDate ||
-    p?.dropoff_date_value ||
-    p?.dropoffDateValue ||
-    p?.drop_date ||
-    p?.dropDate ||
-    "";
-
-  const pickDate =
-    s.pickup_date ||
-    s.pickupDate ||
-    p?.pickup_date ||
-    p?.pickupDate ||
-    p?.pickup_date_value ||
-    p?.pickupDateValue ||
-    p?.pick_date ||
-    p?.pickDate ||
-    "";
-
-  const dropType =
-    s.dropoff_timeslot_type ||
-    s.dropoffTimeslotType ||
-    p?.dropoff_timeslot_type ||
-    p?.dropoffTimeslotType ||
-    p?.dropoff_slot_type ||
-    p?.dropoffSlotType ||
-    "";
-
-  const dropVal =
-    s.dropoff_timeslot_value ||
-    s.dropoffTimeslotValue ||
-    p?.dropoff_timeslot_value ||
-    p?.dropoffTimeslotValue ||
-    p?.dropoff_slot_value ||
-    p?.dropoffSlotValue ||
-    p?.dropoff_window ||
-    p?.dropoffWindow ||
-    "";
-
-  const pickType =
-    s.pickup_timeslot_type ||
-    s.pickupTimeslotType ||
-    p?.pickup_timeslot_type ||
-    p?.pickupTimeslotType ||
-    p?.pickup_slot_type ||
-    p?.pickupSlotType ||
-    "";
-
-  const pickVal =
-    s.pickup_timeslot_value ||
-    s.pickupTimeslotValue ||
-    p?.pickup_timeslot_value ||
-    p?.pickupTimeslotValue ||
-    p?.pickup_slot_value ||
-    p?.pickupSlotValue ||
-    p?.pickup_window ||
-    p?.pickupWindow ||
-    "";
-
-  // Self-service style (pickup / return)
-  const pickupDate =
-    s.pickup_date ||
-    s.pickupDate ||
-    p?.pickup_date ||
-    p?.pickupDate ||
-    p?.pickup_date_value ||
-    p?.pickupDateValue ||
-    p?.pickup_date_local ||
-    p?.pickupDateLocal ||
-    "";
-
-  const returnDate =
-    s.return_date ||
-    s.returnDate ||
-    p?.return_date ||
-    p?.returnDate ||
-    p?.return_date_value ||
-    p?.returnDateValue ||
-    p?.return_date_local ||
-    p?.returnDateLocal ||
-    "";
-
-  const pickupType =
-    s.pickup_timeslot_type ||
-    s.pickupTimeslotType ||
-    p?.pickup_timeslot_type ||
-    p?.pickupTimeslotType ||
-    p?.pickup_slot_type ||
-    p?.pickupSlotType ||
-    "";
-
-  const pickupVal =
-    s.pickup_timeslot_value ||
-    s.pickupTimeslotValue ||
-    p?.pickup_timeslot_value ||
-    p?.pickupTimeslotValue ||
-    p?.pickup_slot_value ||
-    p?.pickupSlotValue ||
-    p?.pickup_window ||
-    p?.pickupWindow ||
-    "";
-
-  const returnType =
-    s.return_timeslot_type ||
-    s.returnTimeslotType ||
-    p?.return_timeslot_type ||
-    p?.returnTimeslotType ||
-    p?.return_slot_type ||
-    p?.returnSlotType ||
-    "";
-
-  const returnVal =
-    s.return_timeslot_value ||
-    s.returnTimeslotValue ||
-    p?.return_timeslot_value ||
-    p?.returnTimeslotValue ||
-    p?.return_slot_value ||
-    p?.returnSlotValue ||
-    p?.return_window ||
-    p?.returnWindow ||
-    "";
+  // FULL-SERVICE typically posts a nested schedule object with dropoff/pickup fields.
+  // SELF-SERVICE currently posts pickup_date + return_date at the root.
+  const dropDate = s.dropoff_date || s.dropoffDate || "";
+  const pickDate = s.pickup_date || s.pickupDate || "";
+  const selfPickupDate = p?.pickup_date || p?.pickupDate || "";
+  const selfReturnDate = p?.return_date || p?.returnDate || "";
+  const dropType = s.dropoff_timeslot_type || s.dropoffTimeslotType || "";
+  const dropVal = s.dropoff_timeslot_value || s.dropoffTimeslotValue || "";
+  const pickType = s.pickup_timeslot_type || s.pickupTimeslotType || "";
+  const pickVal = s.pickup_timeslot_value || s.pickupTimeslotValue || "";
 
   const humanSlot = (type, val) => {
-    const t = safe(type);
-    const v = safe(val);
-    if (!t && !v) return "";
-    if (t === "flex" && v) return `Flexible window (${v})`;
-    if (t && v) return `${t}: ${v}`;
-    return v || t;
+    if (!type && !val) return "";
+    if (type === "flex" && val) return `Flexible window (${val})`;
+    if (type && val) return `${type}: ${val}`;
+    return val || type;
   };
 
   return {
-    // full
     dropDate: safe(dropDate),
-    dropWindow: humanSlot(dropType, dropVal),
+    dropWindow: humanSlot(safe(dropType), safe(dropVal)),
     pickDate: safe(pickDate),
-    pickWindow: humanSlot(pickType, pickVal),
+    pickWindow: humanSlot(safe(pickType), safe(pickVal)),
+    selfPickupDate: safe(selfPickupDate),
+    selfReturnDate: safe(selfReturnDate),
+  };
+};
 
-    // self
-    pickupDate: safe(pickupDate),
-    pickupWindow: humanSlot(pickupType, pickupVal),
-    returnDate: safe(returnDate),
-    returnWindow: humanSlot(returnType, returnVal),
+const getAddress = (p) => {
+  const a = p?.location || p?.address || {};
+  return {
+    line1: safe(a.street || a.line1 || ""),
+    line2: safe(a.address2 || a.line2 || ""),
+    city: safe(a.city || ""),
+    state: safe(a.state || ""),
+    zip: safe(a.zip || a.postal || ""),
+    notes: safe(a.notes || ""),
   };
 };
 
@@ -241,58 +135,42 @@ const normalizeItems = (p) => {
       const name =
         safe(it.name || it.title || it.productName).trim() || titleizeSku(sku) || sku || "Item";
 
+      // Prefer values from payload if present
       const unitFromPayload = it.unitPrice ?? it.unit_price ?? it.price;
       const lineFromPayload = it.lineTotal ?? it.line_total ?? it.total;
 
       const unitPrice =
         unitFromPayload !== undefined && unitFromPayload !== null && unitFromPayload !== ""
           ? Number(unitFromPayload)
-          : sku && SKU_PRICE_MAP[sku] !== undefined
-            ? Number(SKU_PRICE_MAP[sku])
-            : NaN;
+          : (sku && SKU_PRICE_MAP[sku] !== undefined ? Number(SKU_PRICE_MAP[sku]) : NaN);
 
       const lineTotal =
         lineFromPayload !== undefined && lineFromPayload !== null && lineFromPayload !== ""
           ? Number(lineFromPayload)
-          : Number.isFinite(unitPrice)
-            ? unitPrice * qty
-            : NaN;
+          : (Number.isFinite(unitPrice) ? unitPrice * qty : NaN);
 
       return { sku, qty, name, unitPrice, lineTotal };
     })
     .filter((it) => it.qty > 0);
 };
 
-// UPDATED: extended fee mapping includes common key variants
 const buildSummaryRows = (pricing) => {
   const rows = [];
-  const add = (label, val) => {
+  const add = (label, val, opts = {}) => {
     const n = Number(val);
     if (!Number.isFinite(n) || Math.abs(n) < 0.000001) return;
-    rows.push({ label, value: n });
+    rows.push({ label, value: n, ...opts });
   };
 
-  add("Items subtotal", pricing?.items);
+  // FULL-SERVICE keys: items, delivery, rush, congestion, dropFee, pickFee, extended, minFee
+  // SELF-SERVICE keys: chairsSubtotal, rush, extend, minFee
+  add("Items subtotal", pricing?.items ?? pricing?.itemsSubtotal ?? pricing?.chairsSubtotal);
   add("Delivery fee (30%)", pricing?.delivery);
   add("Rush fee (≤2 days)", pricing?.rush);
   add("Congestion fee", pricing?.congestion);
   add("Delivery time slot fee", pricing?.dropFee);
   add("Pickup time slot fee", pricing?.pickFee);
-
-  // Extended rental fee: accept multiple possible field names
-  const extendedVal =
-    pricing?.extended ??
-    pricing?.extended_fee ??
-    pricing?.extendedFee ??
-    pricing?.extended_rental_fee ??
-    pricing?.extendedRentalFee ??
-    pricing?.long_rental_fee ??
-    pricing?.longRentalFee ??
-    pricing?.multi_day_fee ??
-    pricing?.multiDayFee;
-
-  add("Extended rental fee", extendedVal);
-
+  add("Extended rental fee", pricing?.extended ?? pricing?.extend);
   add("Minimum surcharge", pricing?.minFee);
 
   const tax = Number(pricing?.tax);
@@ -391,7 +269,8 @@ const textItems = (items) =>
     })
     .join("\n");
 
-const textSummary = (rows) => rows.map((r) => `- ${r.label}: ${fmtMoneyOrDash(r.value)}`).join("\n");
+const textSummary = (rows) =>
+  rows.map((r) => `- ${r.label}: ${fmtMoneyOrDash(r.value)}`).join("\n");
 
 async function sendResend({ apiKey, from, to, subject, text, html }) {
   const r = await fetch("https://api.resend.com/emails", {
@@ -448,28 +327,45 @@ export default async (req) => {
     `KR-${Date.now()}-${Math.random().toString(16).slice(2, 8).toUpperCase()}`;
 
   const flow = safe(p?.flow || p?.flowType || "request");
-  const isSelfFlow = /self/i.test(flow);
-
   const createdAt = new Date().toISOString();
 
+  // Detect the SELF-SERVICE flow reliably even if the frontend doesn't send flow/flowType.
+  // Self-service posts pickup_date + return_date at the root and only chair_* SKUs.
+  const isSelfFlow =
+    /self/i.test(flow) ||
+    (!!p?.pickup_date || !!p?.pickupDate || !!p?.return_date || !!p?.returnDate) ||
+    (Array.isArray(p?.items) &&
+      p.items.length > 0 &&
+      p.items.every((it) => /^chair_/i.test(safe(it?.sku || it?.id || ""))));
+
   const schedule = getSchedule(p);
+  const addr = getAddress(p);
   const pricing = p?.pricing || p?.totals || {};
   const summaryRows = buildSummaryRows(pricing);
 
-  // OWNER EMAIL (unchanged subject/content structure)
+  // ---------- OWNER EMAIL ----------
   const ownerText =
     `Request ID: ${requestId}\n` +
     `Flow: ${flow}\n` +
-    `Created: ${createdAt}\n\n` +
-    `Customer:\n` +
+    `Created: ${createdAt}\n` +
+    (p?.client_order_token ? `Client token: ${safe(p.client_order_token)}\n` : "") +
+    `\nCustomer:\n` +
     `- Name: ${customerName || "(not provided)"}\n` +
-    `- Email: ${customerEmail}\n\n` +
-    `Schedule:\n` +
+    `- Email: ${customerEmail}\n` +
+    (customer.phone ? `- Phone: ${safe(customer.phone)}\n` : "") +
+    `\nSchedule:\n` +
     (isSelfFlow
-      ? (schedule.pickupDate ? `- Pickup: ${schedule.pickupDate}${schedule.pickupWindow ? " (" + schedule.pickupWindow + ")" : ""}\n` : "") +
-        (schedule.returnDate ? `- Return: ${schedule.returnDate}${schedule.returnWindow ? " (" + schedule.returnWindow + ")" : ""}\n` : "")
+      ? (schedule.selfPickupDate ? `- Pickup: ${schedule.selfPickupDate}\n` : "") +
+        (schedule.selfReturnDate ? `- Return: ${schedule.selfReturnDate}\n` : "")
       : (schedule.dropDate ? `- Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
         (schedule.pickDate ? `- Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n` : "")) +
+    (addr.line1 || addr.city || addr.zip
+      ? `\nAddress:\n` +
+        (addr.line1 ? `- ${addr.line1}\n` : "") +
+        (addr.line2 ? `- ${addr.line2}\n` : "") +
+        `- ${addr.city}${addr.state ? ", " + addr.state : ""} ${addr.zip}\n` +
+        (addr.notes ? `- Notes: ${addr.notes}\n` : "")
+      : "") +
     `\nItems:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "");
 
@@ -480,28 +376,36 @@ export default async (req) => {
         <strong>Request ID:</strong> ${escapeHtml(requestId)}<br>
         <strong>Flow:</strong> ${escapeHtml(flow)}<br>
         <strong>Created:</strong> ${escapeHtml(createdAt)}
+        ${p?.client_order_token ? `<br><strong>Client token:</strong> ${escapeHtml(p.client_order_token)}` : ""}
       </p>
 
       <h3 style="margin:18px 0 8px;">Contact Info</h3>
       <p style="margin:0 0 14px;">
         <strong>Name:</strong> ${escapeHtml(customerName || "(not provided)")}<br>
         <strong>Email:</strong> ${escapeHtml(customerEmail)}
+        ${customer.phone ? `<br><strong>Phone:</strong> ${escapeHtml(customer.phone)}` : ""}
       </p>
 
       <h3 style="margin:18px 0 8px;">Schedule</h3>
       <p style="margin:0 0 14px;">
-        ${
-          isSelfFlow
-            ? `
-              ${schedule.pickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickupDate)}${schedule.pickupWindow ? " (" + escapeHtml(schedule.pickupWindow) + ")" : ""}<br>` : ""}
-              ${schedule.returnDate ? `<strong>Return:</strong> ${escapeHtml(schedule.returnDate)}${schedule.returnWindow ? " (" + escapeHtml(schedule.returnWindow) + ")" : ""}` : ""}
-            `
-            : `
-              ${schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
-              ${schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
-            `
-        }
+        ${isSelfFlow && schedule.selfPickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.selfPickupDate)}<br>` : ""}
+        ${isSelfFlow && schedule.selfReturnDate ? `<strong>Return:</strong> ${escapeHtml(schedule.selfReturnDate)}` : ""}
+        ${!isSelfFlow && schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
+        ${!isSelfFlow && schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
       </p>
+
+      ${
+        addr.line1 || addr.city || addr.zip
+          ? `
+        <h3 style="margin:18px 0 8px;">Address</h3>
+        <p style="margin:0 0 14px;">
+          ${escapeHtml(addr.line1)}${addr.line2 ? `<br>${escapeHtml(addr.line2)}` : ""}<br>
+          ${escapeHtml(addr.city)}${addr.state ? ", " + escapeHtml(addr.state) : ""} ${escapeHtml(addr.zip)}
+          ${addr.notes ? `<br><strong>Notes:</strong> ${escapeHtml(addr.notes)}` : ""}
+        </p>
+      `
+          : ""
+      }
 
       <h3 style="margin:18px 0 8px;">Items</h3>
       ${htmlTableItems(items)}
@@ -517,52 +421,22 @@ export default async (req) => {
     </div>
   `;
 
-  // CUSTOMER EMAILS (subjects updated per your requirement)
-  const CUSTOMER_COPY_SELF = {
-    subject: "Chair Rental Request Received – Pending Approval",
-    introHtml: `
-      We received your chair rental request and it is pending approval.<br>
-      We’ll review availability and follow up shortly.<br>
-      <strong>If approved, we’ll email you an invoice to complete booking.</strong>
-    `,
-    introText:
-      "We received your chair rental request and it is pending approval.\n" +
-      "We’ll review availability and follow up shortly.\n" +
-      "If approved, we’ll email you an invoice to complete booking.\n",
-  };
-
-  const CUSTOMER_COPY_FULL = {
-    subject: `Event Rental Request Received – Pending Approval — ${requestId}`,
-    introHtml: `
-      We received your event rental request and it is pending approval.<br>
-      We’ll review availability and follow up shortly.<br>
-      <strong>If approved, we’ll email you an invoice to complete booking.</strong>
-    `,
-    introText:
-      "We received your event rental request and it is pending approval.\n" +
-      "We’ll review availability and follow up shortly.\n" +
-      "If approved, we’ll email you an invoice to complete booking.\n",
-  };
-
-  const customerTemplate = isSelfFlow ? CUSTOMER_COPY_SELF : CUSTOMER_COPY_FULL;
+  // ---------- CUSTOMER EMAIL ----------
+  const customerSubject = isSelfFlow
+    ? "Chair Rental Request Received – Pending Approval"
+    : "Event Rental Request Received – Pending Approval";
 
   const customerText =
     `Hi${customerName ? " " + customerName : ""},\n\n` +
-    customerTemplate.introText +
-    `\nRequest ID: ${requestId}\n\n` +
+    `We received your request and it is pending approval.\n` +
+    `We’ll review availability and follow up shortly.\n` +
+    `If approved, we’ll email you an invoice to complete booking.\n\n` +
+    `Request ID: ${requestId}\n\n` +
     (isSelfFlow
-      ? (schedule.pickupDate
-          ? `Pickup: ${schedule.pickupDate}${schedule.pickupWindow ? " (" + schedule.pickupWindow + ")" : ""}\n`
-          : "") +
-        (schedule.returnDate
-          ? `Return: ${schedule.returnDate}${schedule.returnWindow ? " (" + schedule.returnWindow + ")" : ""}\n\n`
-          : "\n")
-      : (schedule.dropDate
-          ? `Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n`
-          : "") +
-        (schedule.pickDate
-          ? `Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n`
-          : "\n")) +
+      ? (schedule.selfPickupDate ? `Pickup: ${schedule.selfPickupDate}\n` : "") +
+        (schedule.selfReturnDate ? `Return: ${schedule.selfReturnDate}\n\n` : "\n")
+      : (schedule.dropDate ? `Drop-off: ${schedule.dropDate}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}\n` : "") +
+        (schedule.pickDate ? `Pickup:  ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n` : "\n")) +
     `Items:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
     `\nThanks,\nKraus' Tables & Chairs`;
@@ -572,24 +446,19 @@ export default async (req) => {
       <p style="margin:0 0 12px;">Hi${customerName ? " " + escapeHtml(customerName) : ""},</p>
 
       <p style="margin:0 0 12px;">
-        ${customerTemplate.introHtml}
+        We received your request and it is pending approval.<br>
+        We’ll review availability and follow up shortly.<br>
+        <strong>If approved, we’ll email you an invoice to complete booking.</strong>
       </p>
 
       <p style="margin:0 0 14px;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
 
       <h3 style="margin:18px 0 8px;">Schedule</h3>
       <p style="margin:0 0 14px;">
-        ${
-          isSelfFlow
-            ? `
-              ${schedule.pickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickupDate)}${schedule.pickupWindow ? " (" + escapeHtml(schedule.pickupWindow) + ")" : ""}<br>` : ""}
-              ${schedule.returnDate ? `<strong>Return:</strong> ${escapeHtml(schedule.returnDate)}${schedule.returnWindow ? " (" + escapeHtml(schedule.returnWindow) + ")" : ""}` : ""}
-            `
-            : `
-              ${schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
-              ${schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
-            `
-        }
+        ${isSelfFlow && schedule.selfPickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.selfPickupDate)}<br>` : ""}
+        ${isSelfFlow && schedule.selfReturnDate ? `<strong>Return:</strong> ${escapeHtml(schedule.selfReturnDate)}` : ""}
+        ${!isSelfFlow && schedule.dropDate ? `<strong>Drop-off:</strong> ${escapeHtml(schedule.dropDate)}${schedule.dropWindow ? " (" + escapeHtml(schedule.dropWindow) + ")" : ""}<br>` : ""}
+        ${!isSelfFlow && schedule.pickDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.pickDate)}${schedule.pickWindow ? " (" + escapeHtml(schedule.pickWindow) + ")" : ""}` : ""}
       </p>
 
       <h3 style="margin:18px 0 8px;">Items</h3>
@@ -622,7 +491,7 @@ export default async (req) => {
       apiKey: RESEND_API_KEY,
       from: FROM_EMAIL,
       to: customerEmail,
-      subject: customerTemplate.subject,
+      subject: customerSubject,
       text: customerText,
       html: customerHtml,
     });
