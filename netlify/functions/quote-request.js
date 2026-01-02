@@ -486,7 +486,7 @@ export default async (req) => {
     `Items:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
     `\nView our Rental Policies:\n${POLICIES_URL}\n` +
-    `\nThanks,\nKraus' Tables & Chairs\n${SIG_ADDRESS}\n${SIG_PHONE}\n`;
+    `\nThanks,\nKraus' Tables & Chairs\n${SIG_ADDRESS}\n${SIG_PHONE}\nkraustables.com\n`;
 
   const customerHtml = `
     <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
@@ -536,12 +536,13 @@ export default async (req) => {
         <a href="${escapeHtml(POLICIES_URL)}">View our Rental Policies</a>
       </p>
 
-      <p style="margin:10px 0 0; color:#777;">
-        Thanks,<br>
-        Kraus' Tables & Chairs<br>
-        ${escapeHtml(SIG_ADDRESS).replace(/\n/g, "<br>")}<br>
-        ${escapeHtml(SIG_PHONE)}
-      </p>
+      <div style="margin-top:24px;font-size:13px;line-height:1.45;color:#888;">
+  <strong style="color:#666;">Kraus’ Tables &amp; Chairs</strong><br>
+  956 Hancock Street, #1L<br>
+  Brooklyn, NY 11233<br>
+  <a href="tel:+17182184057" style="color:#888;text-decoration:none;">(718) 218-4057</a><br>
+  <a href="https://kraustables.com" style="color:#888;text-decoration:none;">kraustables.com</a>
+</div>
     </div>
   `;
 
