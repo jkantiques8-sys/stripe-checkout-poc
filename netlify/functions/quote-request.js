@@ -500,6 +500,25 @@ export default async (req) => {
 
       <p style="margin:0 0 14px;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
 
+      <h3 style="margin:18px 0 8px;">Your Contact Info</h3>
+      <p style="margin:0 0 14px;">
+        <strong>Name:</strong> ${escapeHtml(customerName || "(not provided)")}<br>
+        <strong>Email:</strong> ${escapeHtml(customerEmail)}${customer.phone ? `<br><strong>Phone:</strong> ${escapeHtml(customer.phone)}` : ""}
+      </p>
+
+      ${
+        addr.line1 || addr.city || addr.zip
+          ? `
+        <h3 style="margin:18px 0 8px;">Address</h3>
+        <p style="margin:0 0 14px;">
+          ${escapeHtml(addr.line1)}${addr.line2 ? `<br>${escapeHtml(addr.line2)}` : ""}<br>
+          ${escapeHtml(addr.city)}${addr.state ? ", " + escapeHtml(addr.state) : ""} ${escapeHtml(addr.zip)}
+          ${addr.notes ? `<br><strong>Notes:</strong> ${escapeHtml(addr.notes)}` : ""}
+        </p>
+      `
+          : ""
+      }
+
       <h3 style="margin:18px 0 8px;">Schedule</h3>
       <p style="margin:0 0 14px;">
         ${isSelfFlow && schedule.selfPickupDate ? `<strong>Pickup:</strong> ${escapeHtml(schedule.selfPickupDate)}<br>` : ""}
