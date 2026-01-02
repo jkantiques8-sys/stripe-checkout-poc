@@ -530,7 +530,7 @@ export default async (req) => {
 
       <p style="margin:0 0 14px;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
 
-      <h3 style="margin:18px 0 8px;">Your Contact Info</h3>
+      <h3 style="margin:18px 0 8px;">Contact Info</h3>
       <p style="margin:0 0 14px;">
         <strong>Name:</strong> ${escapeHtml(customerName || "(not provided)")}<br>
         <strong>Email:</strong> ${escapeHtml(customerEmail)}${customer.phone ? `<br><strong>Phone:</strong> ${escapeHtml(customer.phone)}` : ""}
@@ -539,7 +539,7 @@ export default async (req) => {
       ${
         addr.line1 || addr.city || addr.zip
           ? `
-        <h3 style="margin:18px 0 8px;">Address</h3>
+        <h3 style="margin:18px 0 8px;">Delivery Address</h3>
         <p style="margin:0 0 14px;">
           ${escapeHtml(addr.line1)}${addr.line2 ? `<br>${escapeHtml(addr.line2)}` : ""}<br>
           ${escapeHtml(addr.city)}${addr.state ? ", " + escapeHtml(addr.state) : ""} ${escapeHtml(addr.zip)}
