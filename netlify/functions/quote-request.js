@@ -321,6 +321,31 @@ async function sendResend({ apiKey, from, to, subject, text, html }) {
   return data;
 }
 
+async function sendTwilioSms({ accountSid, authToken, from, to, body }) {
+  if (!accountSid || !authToken || !from || !to || !body) return;
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
+  const auth = btoa(`${accountSid}:${authToken}`);
+
+  const params = new URLSearchParams();
+  params.set("From", from);
+  params.set("To", to);
+  params.set("Body", body);
+
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`Twilio SMS error (${r.status}): ${t.slice(0, 200)}`);
+  }
+}
+
 export default async (req) => {
   if (req.method === "OPTIONS") return json(200, { ok: true });
   if (req.method !== "POST") return json(405, { ok: false, error: "Method not allowed" });
@@ -328,6 +353,11 @@ export default async (req) => {
   const RESEND_API_KEY = process.env.RESEND_API_KEY;
   const FROM_EMAIL = process.env.FROM_EMAIL || "Kraus' Tables & Chairs <orders@kraustables.com>";
   const OWNER_EMAIL = process.env.OWNER_EMAIL || "orders@kraustables.com";
+
+  const OWNER_PHONE = process.env.OWNER_PHONE; // e.g. "+1917..."
+  const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+  const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+  const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 
   if (!RESEND_API_KEY) return json(500, { ok: false, error: "Missing RESEND_API_KEY" });
 
@@ -574,6 +604,64 @@ export default async (req) => {
       text: ownerText,
       html: ownerHtml,
     });
+
+    // SMS owner notification (uses same env vars as checkout-webhook)
+    try {
+      const smsEnabled =
+        !!OWNER_PHONE &&
+        !!TWILIO_PHONE_NUMBER &&
+        !!TWILIO_ACCOUNT_SID &&
+        !!TWILIO_AUTH_TOKEN;
+
+      if (smsEnabled) {
+        const totalLine = pricing?.total ? `Total: ${fmtMoney(pricing.total)}` : "";
+        const nameLine = customerName ? `Customer: ${customerName}` : "";
+        const idLine = `Request: ${requestId}`;
+
+        const deliveryLine = schedule.dropDate
+          ? `Delivery: ${schedule.dropDate}${schedule.dropWindow ? ` (${schedule.dropWindow})` : ""}`
+          : "";
+        const pickupLine = schedule.pickDate
+          ? `Pickup: ${schedule.pickDate}${schedule.pickWindow ? ` (${schedule.pickWindow})` : ""}`
+          : "";
+
+        const selfPickupLine = schedule.selfPickupDate
+          ? `Pickup: ${schedule.selfPickupDate}`
+          : "";
+        const selfReturnLine = schedule.selfReturnDate
+          ? `Return: ${schedule.selfReturnDate}`
+          : "";
+
+        const header = isSelfFlow
+          ? `🙋‍♀️ NEW CHAIR RENTAL REQUEST`
+          : `🚚 NEW EVENT RENTAL REQUEST`;
+
+        const body = [
+          `${header} — ${requestId}`,
+          nameLine,
+          idLine,
+          isSelfFlow ? selfPickupLine : deliveryLine,
+          isSelfFlow ? selfReturnLine : pickupLine,
+          totalLine,
+        ]
+          .filter(Boolean)
+          .join("\n")
+          .slice(0, 1500);
+
+        await sendTwilioSms({
+          accountSid: TWILIO_ACCOUNT_SID,
+          authToken: TWILIO_AUTH_TOKEN,
+          from: TWILIO_PHONE_NUMBER,
+          to: OWNER_PHONE,
+          body,
+        });
+      } else {
+        console.log("Twilio not configured; skipping SMS");
+      }
+    } catch (smsErr) {
+      console.error("Failed to send owner SMS:", smsErr?.message || smsErr);
+      // Best-effort: do not fail the request if SMS fails
+    }
 
     await sendResend({
       apiKey: RESEND_API_KEY,
