@@ -540,8 +540,8 @@ export default async (req) => {
   <strong style="color:#666;">Kraus’ Tables &amp; Chairs</strong><br>
   956 Hancock Street, #1L<br>
   Brooklyn, NY 11233<br>
-<a href="tel:17182184057">(718) 218-4057</a><br>
-<a href="https://kraustables.com">kraustables.com</a>
+  <a href="tel:+17182184057">(718) 218-4057</a><br>
+  <a href="https://kraustables.com">kraustables.com</a>
 </div>
     </div>
   `;
