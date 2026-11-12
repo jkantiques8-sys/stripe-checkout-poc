@@ -214,6 +214,50 @@ const escapeHtml = (s) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
+// Format structured venue notes from the full-service form as readable email rows.
+// Older, unstructured notes remain readable without losing any submitted text.
+const VENUE_NOTE_LABELS = {
+  "Furniture use": "Furniture use",
+  "Outdoor surface/weather protection": "Surface & weather protection",
+  "Delivery access": "Delivery access",
+  "Service/freight entrance": "Service/freight entrance",
+  "Loading/parking": "Loading & parking",
+  "Freight elevator restrictions": "Freight elevator restrictions",
+  "Additional notes": "Additional notes",
+};
+
+const formatVenueNotes = (notes) => {
+  const raw = safe(notes).trim();
+  if (!raw) return { html: "", text: "" };
+
+  const lines = raw.split(/\r?\n/);
+  const entries = [];
+  for (const line of lines) {
+    const match = line.match(/^([^:]+):\s*(.*)$/);
+    const label = match && VENUE_NOTE_LABELS[match[1].trim()];
+    if (label) {
+      entries.push({ label, value: match[2].trim() });
+    } else if (entries.length) {
+      // Preserve multiline answers entered in a free-text field.
+      entries[entries.length - 1].value += `\n${line}`;
+    } else {
+      entries.push({ label: "Notes", value: line });
+    }
+  }
+
+  const html = `<h3 style="margin:18px 0 8px;">Event Venue &amp; Delivery Access</h3>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; font-size:14px;">
+      <tbody>${entries.map(({ label, value }) => `
+        <tr>
+          <td style="padding:5px 12px 5px 0; vertical-align:top; width:190px; font-weight:600;">${escapeHtml(label)}</td>
+          <td style="padding:5px 0; vertical-align:top; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHtml(value)}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+  const text = `Event Venue & Delivery Access:\n${entries.map(({ label, value }) => `- ${label}: ${value}`).join("\n")}\n`;
+  return { html, text };
+};
+
 const htmlTableItems = (items) => {
   const rows = items
     .map((it) => {
@@ -395,6 +439,7 @@ export default async (req) => {
   const addr = getAddress(p);
   const pricing = p?.pricing || p?.totals || {};
   const summaryRows = buildSummaryRows(pricing);
+  const venueNotes = formatVenueNotes(addr.notes);
 
   const ownerSubject = isSelfFlow
     ? `NEW CHAIR RENTAL REQUEST — ${requestId}`
@@ -424,9 +469,9 @@ export default async (req) => {
       ? `\nAddress:\n` +
         (addr.line1 ? `- ${addr.line1}\n` : "") +
         (addr.line2 ? `- ${addr.line2}\n` : "") +
-        `- ${addr.city}${addr.state ? ", " + addr.state : ""} ${addr.zip}\n` +
-        (addr.notes ? `- Notes: ${addr.notes}\n` : "")
+        `- ${addr.city}${addr.state ? ", " + addr.state : ""} ${addr.zip}\n`
       : "") +
+    (venueNotes.text ? `\n${venueNotes.text}` : "") +
     `\nItems:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "");
 
@@ -474,11 +519,13 @@ export default async (req) => {
         <p style="margin:0 0 14px;">
           ${escapeHtml(addr.line1)}${addr.line2 ? `<br>${escapeHtml(addr.line2)}` : ""}<br>
           ${escapeHtml(addr.city)}${addr.state ? ", " + escapeHtml(addr.state) : ""} ${escapeHtml(addr.zip)}
-          ${addr.notes ? `<br><strong>Notes:</strong> ${escapeHtml(addr.notes)}` : ""}
+
         </p>
       `
           : ""
       }
+
+      ${venueNotes.html}
 
       <h3 style="margin:18px 0 8px;">Items</h3>
       ${htmlTableItems(items)}
@@ -513,6 +560,7 @@ export default async (req) => {
         (schedule.pickDate
           ? `Pickup:   ${schedule.pickDate}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}\n\n`
           : "\n")) +
+    (venueNotes.text ? `${venueNotes.text}\n` : "") +
     `Items:\n${textItems(items)}\n` +
     (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
     `\nView our Rental Policies:\n${POLICIES_URL}\n` +
@@ -543,11 +591,13 @@ export default async (req) => {
         <p style="margin:0 0 14px;">
           ${escapeHtml(addr.line1)}${addr.line2 ? `<br>${escapeHtml(addr.line2)}` : ""}<br>
           ${escapeHtml(addr.city)}${addr.state ? ", " + escapeHtml(addr.state) : ""} ${escapeHtml(addr.zip)}
-          ${addr.notes ? `<br><strong>Notes:</strong> ${escapeHtml(addr.notes)}` : ""}
+
         </p>
       `
           : ""
       }
+
+      ${venueNotes.html}
 
       <h3 style="margin:18px 0 8px;">Schedule</h3>
       <p style="margin:0 0 14px;">
