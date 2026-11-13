@@ -207,6 +207,76 @@ const buildSummaryRows = (pricing) => {
   return rows;
 };
 
+// Full-service email summaries mirror the order form's presentation.
+// These are display rows only: all amounts come from the submitted pricing.
+const summaryWindowLabel = (typeRaw, rangeRaw) => {
+  const type = safe(typeRaw).trim();
+  const range = safe(rangeRaw).trim();
+  if (type === "flex") {
+    return { "8-12": "8 AM–12 PM", "12-4": "12 PM–4 PM", "4-8": "4 PM–8 PM" }[range] || range;
+  }
+  if (type !== "prompt") return range;
+  const match = range.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (!match) return range;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const hour12 = (h) => h % 12 || 12;
+  const period = (h) => h >= 12 ? "PM" : "AM";
+  return period(start) === period(end)
+    ? `${hour12(start)}–${hour12(end)} ${period(end)}`
+    : `${hour12(start)} ${period(start)}–${hour12(end)} ${period(end)}`;
+};
+
+const buildFullServiceSummaryRows = (pricing, rawSchedule = {}) => {
+  const s = rawSchedule || {};
+  const dropType = safe(s.dropoff_timeslot_type || s.dropoffTimeslotType);
+  const dropValue = safe(s.dropoff_timeslot_value || s.dropoffTimeslotValue);
+  const pickType = safe(s.pickup_timeslot_type || s.pickupTimeslotType);
+  const pickValue = safe(s.pickup_timeslot_value || s.pickupTimeslotValue);
+  const dropPremium = dropType === "prompt";
+  const pickPremium = pickType === "prompt";
+  const rows = [];
+  const amount = (v) => (v === null || v === undefined || v === "") ? 0 : Number(v);
+  const add = (label, val, opts = {}) => {
+    const n = amount(val);
+    if (!Number.isFinite(n) || Math.abs(n) < 0.000001) return;
+    rows.push({ label, value: n, ...opts });
+  };
+  const slotLabel = (kind, type, value) =>
+    `${type === "prompt" ? "Premium" : "Standard"} ${kind}: ${summaryWindowLabel(type, value)}`;
+
+  add("Items subtotal", pricing?.items ?? pricing?.itemsSubtotal);
+  add("Delivery fee (30%)", pricing?.delivery);
+  add("Manhattan delivery surcharge", pricing?.congestion);
+  if (!dropPremium) add(slotLabel("delivery", dropType, dropValue), pricing?.dropFee);
+  if (!pickPremium) add(slotLabel("pickup", pickType, pickValue), pricing?.pickFee);
+  add("Extended rental fee", pricing?.extended);
+  add("Minimum order surcharge (to $400)", pricing?.minFee);
+
+  // Sum the already-provided base charges, never reprice the order.
+  const base = rows.reduce((sum, row) => sum + row.value, 0);
+  const hasPricing = Number.isFinite(Number(pricing?.total));
+  if (hasPricing) rows.push({ label: "Base rental total", value: base, isSubtotal: true });
+
+  const extra = [];
+  const addExtra = (label, val) => {
+    const n = amount(val);
+    if (Number.isFinite(n) && Math.abs(n) >= 0.000001) extra.push({ label, value: n });
+  };
+  addExtra("Rush fee (≤2 days)", pricing?.rush);
+  if (dropPremium) addExtra(slotLabel("delivery", dropType, dropValue), pricing?.dropFee);
+  if (pickPremium) addExtra(slotLabel("pickup", pickType, pickValue), pricing?.pickFee);
+  if (extra.length) {
+    rows.push({ label: "Additional service fees", isHeading: true });
+    rows.push(...extra);
+  }
+
+  add("Sales tax (8.875%)", pricing?.tax);
+  const total = Number(pricing?.total);
+  if (Number.isFinite(total)) rows.push({ label: "Total", value: total, isTotal: true });
+  return rows;
+};
+
 const escapeHtml = (s) =>
   safe(s)
     .replace(/&/g, "&amp;")
@@ -304,13 +374,19 @@ const htmlTableSummary = (rows) => {
 
   const body = rows
     .map((r) => {
-      const isTotal = !!r.isTotal;
-      return `
+      if (r.isHeading) return `
         <tr>
-          <td style="padding:8px 0; border-bottom:1px solid #eee; ${isTotal ? "font-weight:700;" : ""}">
+          <td colspan="2" style="padding:16px 0 6px; border-top:1px solid #ccc; font-weight:700;">
             ${escapeHtml(r.label)}
           </td>
-          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap; ${isTotal ? "font-weight:700;" : ""}">
+        </tr>`;
+      const emphasized = !!(r.isTotal || r.isSubtotal);
+      return `
+        <tr>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; ${emphasized ? "font-weight:700;" : ""}">
+            ${escapeHtml(r.label)}
+          </td>
+          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap; ${emphasized ? "font-weight:700;" : ""}">
             ${fmtMoneyOrDash(r.value)}
           </td>
         </tr>
@@ -339,7 +415,7 @@ const textItems = (items) =>
     .join("\n");
 
 const textSummary = (rows) =>
-  rows.map((r) => `- ${r.label}: ${fmtMoneyOrDash(r.value)}`).join("\n");
+  rows.map((r) => r.isHeading ? `\n${r.label}:` : `${r.isSubtotal || r.isTotal ? "" : "- "}${r.label}: ${fmtMoneyOrDash(r.value)}`).join("\n");
 
 async function sendResend({ apiKey, from, to, subject, text, html }) {
   const r = await fetch("https://api.resend.com/emails", {
@@ -438,7 +514,9 @@ export default async (req) => {
   const schedule = getSchedule(p);
   const addr = getAddress(p);
   const pricing = p?.pricing || p?.totals || {};
-  const summaryRows = buildSummaryRows(pricing);
+  const summaryRows = isSelfFlow
+    ? buildSummaryRows(pricing)
+    : buildFullServiceSummaryRows(pricing, p?.schedule);
   const venueNotes = formatVenueNotes(addr.notes);
 
   const ownerSubject = isSelfFlow
