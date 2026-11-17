@@ -266,12 +266,16 @@ const buildFullServiceSummaryRows = (pricing, rawSchedule = {}) => {
   addExtra("Rush fee (≤2 days)", pricing?.rush);
   if (dropPremium) addExtra(slotLabel("delivery", dropType, dropValue), pricing?.dropFee);
   if (pickPremium) addExtra(slotLabel("pickup", pickType, pickValue), pricing?.pickFee);
+  if (Number(pricing?.holiday) > 0) {
+    const period = safe(pricing?.holidayPeriod).trim();
+    addExtra(period ? `Holiday rental surcharge (${period})` : "Holiday rental surcharge", pricing.holiday);
+  }
   if (extra.length) {
     rows.push({ label: "Additional service fees", isHeading: true });
     rows.push(...extra);
   }
 
-  add("Sales tax (8.875%)", pricing?.tax);
+  add("Sales tax (8.875%)", pricing?.tax, { isTaxSeparation: extra.length > 0 });
   const total = Number(pricing?.total);
   if (Number.isFinite(total)) rows.push({ label: "Total", value: total, isTotal: true });
   return rows;
@@ -373,7 +377,7 @@ const htmlTableSummary = (rows) => {
   if (!rows.length) return "";
 
   const body = rows
-    .map((r) => {
+    .map((r, index) => {
       if (r.isHeading) return `
         <tr>
           <td colspan="2" style="padding:16px 0 6px; border-top:1px solid #ccc; font-weight:700;">
@@ -381,12 +385,16 @@ const htmlTableSummary = (rows) => {
           </td>
         </tr>`;
       const emphasized = !!(r.isTotal || r.isSubtotal);
+      // Reuse the preceding fee row's bottom border as the tax divider (no double line).
+      const beforeTax = !!rows[index + 1]?.isTaxSeparation;
+      const border = beforeTax ? "1px solid #ccc" : "1px solid #eee";
+      const padding = r.isTaxSeparation ? "14px 0 8px" : "8px 0";
       return `
         <tr>
-          <td style="padding:8px 0; border-bottom:1px solid #eee; ${emphasized ? "font-weight:700;" : ""}">
+          <td style="padding:${padding}; border-bottom:${border}; ${emphasized ? "font-weight:700;" : ""}">
             ${escapeHtml(r.label)}
           </td>
-          <td style="padding:8px 0; border-bottom:1px solid #eee; text-align:right; white-space:nowrap; ${emphasized ? "font-weight:700;" : ""}">
+          <td style="padding:${padding}; border-bottom:${border}; text-align:right; white-space:nowrap; ${emphasized ? "font-weight:700;" : ""}">
             ${fmtMoneyOrDash(r.value)}
           </td>
         </tr>
