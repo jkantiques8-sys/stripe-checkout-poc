@@ -31,7 +31,6 @@ const SIG_PHONE = "(718) 218-4057";
 
 // EDIT THIS MAP to match your catalog unit prices.
 const SKU_PRICE_MAP = {
-  "antique-work-bench": 400,
   "ASH-NYC-steel-table": 400,
   dark: 10,
   "end-leaves": 50,
@@ -49,7 +48,6 @@ const SKU_PRICE_MAP = {
 };
 
 const SKU_NAME_MAP = {
-  "antique-work-bench": "Antique Work Bench",
   "ASH-NYC-steel-table": "ASH NYC Standard Steel Table",
   dark: "Vintage Folding Chairs — Dark",
   "end-leaves": "End Leaves (pair)",
@@ -122,7 +120,7 @@ const getSchedule = (p) => {
     const v = safe(val);
     if (!t && !v) return "";
     if (t === "prompt" && v) return formatPromptHourRange(v);
-    if (t === "flex" && v) return `Flexible window (${v})`;
+    if (t === "flex" && v) return { "9-14": "9 AM–2 PM", "14-19": "2 PM–7 PM" }[v] || `Flexible window (${v})`;
     if (t && v) return `${t}: ${v}`;
     return v || t;
   };
@@ -213,7 +211,7 @@ const summaryWindowLabel = (typeRaw, rangeRaw) => {
   const type = safe(typeRaw).trim();
   const range = safe(rangeRaw).trim();
   if (type === "flex") {
-    return { "8-12": "8 AM–12 PM", "12-4": "12 PM–4 PM", "4-8": "4 PM–8 PM" }[range] || range;
+    return { "9-14": "9 AM–2 PM", "14-19": "2 PM–7 PM" }[range] || range;
   }
   if (type !== "prompt") return range;
   const match = range.match(/^(\d{1,2})-(\d{1,2})$/);
