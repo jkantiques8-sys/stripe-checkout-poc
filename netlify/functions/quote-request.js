@@ -317,17 +317,60 @@ const formatVenueNotes = (notes) => {
     }
   }
 
-  const html = `<h3 style="margin:18px 0 8px;">Event Venue &amp; Delivery Access</h3>
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; font-size:14px;">
+  const html = `<h3 style="margin:18px 0 6px;">Event Venue &amp; Delivery Access</h3>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:1.35;">
       <tbody>${entries.map(({ label, value }) => `
         <tr>
-          <td style="padding:5px 12px 5px 0; vertical-align:top; width:190px; font-weight:600;">${escapeHtml(label)}</td>
-          <td style="padding:5px 0; vertical-align:top; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHtml(value)}</td>
+          <td style="padding:3px 12px 3px 0; vertical-align:top; width:196px; font-weight:600;">${escapeHtml(label)}:</td>
+          <td style="padding:3px 0; vertical-align:top; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHtml(value)}</td>
         </tr>`).join("")}
       </tbody>
     </table>`;
-  const text = `Event Venue & Delivery Access:\n${entries.map(({ label, value }) => `- ${label}: ${value}`).join("\n")}\n`;
+  const text = `Event Venue & Delivery Access:\n${entries.map(({ label, value }) => `${label}: ${value}`).join("\n")}\n`;
   return { html, text };
+};
+
+// Plain-text notes for copying directly into Square's invoice message field.
+// HTML email renders this as selectable text without relying on table formatting.
+const formatInvoiceDate = (iso) => {
+  const value = safe(iso).trim();
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return value;
+  const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(date.getTime()) ? value :
+    date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+};
+
+const buildInvoiceCopy = ({ customerName, customerEmail, phone, address, schedule, venueNotes, isSelfFlow }) => {
+  const lines = [];
+  lines.push("Contact Info");
+  lines.push(`Name:   ${customerName || "Not provided"}`);
+  lines.push(`Email:   ${customerEmail || "Not provided"}`);
+  lines.push(`Phone:   ${phone || "Not provided"}`);
+
+  if (address.line1 || address.line2 || address.city || address.zip) {
+    lines.push("", "Address");
+    if (address.line1) lines.push(address.line1);
+    if (address.line2) lines.push(address.line2);
+    lines.push(`${address.city}${address.state ? ", " + address.state : ""} ${address.zip}`.trim());
+  }
+  if (venueNotes.text) {
+    // Three spaces after the colon improve legibility in Square's plain-text
+    // message field, which does not preserve the email's HTML table columns.
+    const venueCopy = venueNotes.text.trimEnd().split("\n").map(line =>
+      /^([^:\n]+): (.*)$/.test(line) ? line.replace(/^([^:\n]+): /, "$1:   ") : line
+    ).join("\n");
+    lines.push("", venueCopy);
+  }
+  lines.push("", "Schedule");
+  if (isSelfFlow) {
+    if (schedule.selfPickupDate) lines.push(`Pickup:   ${formatInvoiceDate(schedule.selfPickupDate)}`);
+    if (schedule.selfReturnDate) lines.push(`Return:   ${formatInvoiceDate(schedule.selfReturnDate)}`);
+  } else {
+    if (schedule.dropDate) lines.push(`Delivery:   ${formatInvoiceDate(schedule.dropDate)}${schedule.dropWindow ? " (" + schedule.dropWindow + ")" : ""}`);
+    if (schedule.pickDate) lines.push(`Pickup:   ${formatInvoiceDate(schedule.pickDate)}${schedule.pickWindow ? " (" + schedule.pickWindow + ")" : ""}`);
+  }
+  return lines.join("\n");
 };
 
 const htmlTableItems = (items) => {
@@ -524,6 +567,10 @@ export default async (req) => {
     ? buildSummaryRows(pricing)
     : buildFullServiceSummaryRows(pricing, p?.schedule);
   const venueNotes = formatVenueNotes(addr.notes);
+  const invoiceCopy = buildInvoiceCopy({
+    customerName, customerEmail, phone: safe(customer.phone || p?.phone || customer.phone_number || customer.phoneNumber),
+    address: addr, schedule, venueNotes, isSelfFlow,
+  });
 
   const ownerSubject = isSelfFlow
     ? `NEW CHAIR RENTAL REQUEST — ${requestId}`
@@ -557,7 +604,8 @@ export default async (req) => {
       : "") +
     (venueNotes.text ? `\n${venueNotes.text}` : "") +
     `\nItems:\n${textItems(items)}\n` +
-    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "");
+    (summaryRows.length ? `\nOrder Summary:\n${textSummary(summaryRows)}\n` : "") +
+    `\n--- COPY INTO SQUARE INVOICE (plain text) ---\n${invoiceCopy}\n--- END INVOICE DETAILS ---\n`;
 
   const ownerHtml = `
     <div style="font-family:Arial,Helvetica,sans-serif; color:#111; line-height:1.4;">
@@ -622,6 +670,10 @@ export default async (req) => {
       `
           : ""
       }
+
+      <h3 style="margin:26px 0 8px;">Copy into Square invoice</h3>
+      <p style="font-size:12px; color:#666; margin:0 0 8px;">Plain text below is formatted for Square’s invoice message field. Select and copy just the text inside the box.</p>
+      <div style="padding:12px 14px; border:1px solid #ddd; border-radius:6px; background:#f8f8f8; color:#222; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere;">${escapeHtml(invoiceCopy)}</div>
     </div>
   `;
 
