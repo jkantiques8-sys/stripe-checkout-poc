@@ -120,7 +120,7 @@ const getSchedule = (p) => {
     const v = safe(val);
     if (!t && !v) return "";
     if (t === "prompt" && v) return formatPromptHourRange(v);
-    if (t === "flex" && v) return { "9-14": "9 AM–2 PM", "14-19": "2 PM–7 PM" }[v] || `Flexible window (${v})`;
+    if (t === "flex" && v) return { "9-14": "9 AM–2 PM", "13-18": "1 PM–6 PM" }[v] || `Flexible window (${v})`;
     if (t && v) return `${t}: ${v}`;
     return v || t;
   };
@@ -211,7 +211,7 @@ const summaryWindowLabel = (typeRaw, rangeRaw) => {
   const type = safe(typeRaw).trim();
   const range = safe(rangeRaw).trim();
   if (type === "flex") {
-    return { "9-14": "9 AM–2 PM", "14-19": "2 PM–7 PM" }[range] || range;
+    return { "9-14": "9 AM–2 PM", "13-18": "1 PM–6 PM" }[range] || range;
   }
   if (type !== "prompt") return range;
   const match = range.match(/^(\d{1,2})-(\d{1,2})$/);
